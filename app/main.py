@@ -5,7 +5,7 @@ from app.scheduler import start_scheduler, scheduler
 from app.workers.youtube.main_worker import run as youtube_worker_run
 from app.api import auth, youtube, stats, categories
 from fastapi.middleware.cors import CORSMiddleware
-# Import ALL models so Alembic + SQLAlchemy see them
+
 from app.models import *
 
 load_dotenv()
