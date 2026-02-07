@@ -2,18 +2,17 @@ from app.models.youtube_channel import YoutubeChannel
 from app.models.youtube_video import YoutubeVideo
 
 def dedupe_existing(db, results):
+    # Only block existing VIDEOS, let CHANNELS pass through for updates
+    incoming_video_ids = list(set(r["video_id"] for r in results))
+    
+    existing_videos = db.query(YoutubeVideo.video_id)\
+        .filter(YoutubeVideo.video_id.in_(incoming_video_ids))\
+        .all()
+    
+    existing_video_set = set(x[0] for x in existing_videos)
 
-    existing_channels = set(x[0] for x in db.query(YoutubeChannel.channel_id))
-    existing_videos = set(x[0] for x in db.query(YoutubeVideo.video_id))
-
-    channel_ids = set()
-    video_ids = set()
-
-    for r in results:
-        if r["video_id"] not in existing_videos:
-            video_ids.add(r["video_id"])
-
-        if r["channel_id"] not in existing_channels:
-            channel_ids.add(r["channel_id"])
-
-    return list(channel_ids), list(video_ids)
+    # Filter videos only
+    new_results = [r for r in results if r["video_id"] not in existing_video_set]
+    
+    # Return ALL channel IDs so we can update their stats
+    return list(set(r["channel_id"] for r in new_results)), list(set(r["video_id"] for r in new_results))
