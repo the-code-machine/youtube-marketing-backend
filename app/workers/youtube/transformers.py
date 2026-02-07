@@ -1,6 +1,7 @@
 import isodate
 from datetime import datetime
 from app.models import *
+from app.models.channel_metrics import ChannelMetrics
 from app.workers.youtube.email_extractor import extract_emails, extract_socials
 
 # ---------------------------------------------------------
