@@ -1,8 +1,8 @@
-import datetime
-from time import timezone
+from datetime import datetime, timezone
 import requests
 
 BASE = "https://www.googleapis.com/youtube/v3/search"
+
 
 def search_videos(api_key, query, published_after=None):
 
@@ -16,15 +16,19 @@ def search_videos(api_key, query, published_after=None):
     }
 
     if published_after:
-        # If int → convert from unix timestamp
-        if isinstance(published_after, int):
-            published_after = datetime.utcfromtimestamp(published_after)
 
-        # If string → parse
-        if isinstance(published_after, str):
+        # If int → unix timestamp
+        if isinstance(published_after, int):
+            published_after = datetime.fromtimestamp(published_after, tz=timezone.utc)
+
+        # If string → ISO format
+        elif isinstance(published_after, str):
             published_after = datetime.fromisoformat(published_after)
 
-        published_after = published_after.replace(tzinfo=timezone.utc)
+        # If naive datetime → force UTC
+        if published_after.tzinfo is None:
+            published_after = published_after.replace(tzinfo=timezone.utc)
+
         params["publishedAfter"] = published_after.isoformat().replace("+00:00", "Z")
 
     try:
@@ -35,7 +39,6 @@ def search_videos(api_key, query, published_after=None):
             return []
 
         data = resp.json()
-
         results = []
 
         for item in data.get("items", []):
