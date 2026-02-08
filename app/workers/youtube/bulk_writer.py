@@ -1,4 +1,5 @@
-import datetime
+from datetime import datetime
+
 from sqlalchemy.dialects.postgresql import insert
 from app.models import YoutubeChannel, YoutubeVideo, ExtractedEmail, ChannelSocialLink
 from app.models.channel_metrics import ChannelMetrics
