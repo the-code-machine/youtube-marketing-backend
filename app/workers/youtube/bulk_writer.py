@@ -19,10 +19,10 @@ def bulk_write_all(db, p):
         stmt = stmt.on_conflict_do_update(
             index_elements=["channel_id"],
             set_={
-                "subscriber_count": stmt.excluded.subscriber_count,
-                "video_count": stmt.excluded.total_video_count,
-                "view_count": stmt.excluded.total_view_count,
-                "updated_at": datetime.utcnow()
+        "subscriber_count": stmt.excluded.subscriber_count,
+        "total_video_count": stmt.excluded.total_video_count,
+        "total_view_count": stmt.excluded.total_view_count,
+        "updated_at": datetime.utcnow()
             }
         )
         db.execute(stmt)
