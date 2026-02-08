@@ -1,3 +1,4 @@
+from time import timezone
 import requests
 
 BASE = "https://www.googleapis.com/youtube/v3/search"
@@ -15,7 +16,8 @@ def search_videos(api_key, query, published_after=None):
 
     if published_after:
         # must be RFC3339
-        params["publishedAfter"] = published_after.isoformat().replace("+00:00", "Z")
+        published_after_new = published_after.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+        params["publishedAfter"] = published_after_new
 
     try:
         resp = requests.get(BASE, params=params, timeout=30)
