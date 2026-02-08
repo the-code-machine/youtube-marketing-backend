@@ -138,10 +138,10 @@ def transform_all(channels_raw, videos_raw, about_data):
                     has_instagram=True if primary_ig else False,
                     contacted=False,
                     
-                    # SEO / Topics (Ensure you added these columns to your Model)
-                    keywords=keywords, 
-                    topic_ids=topic_ids,
-                    made_for_kids=made_for_kids,
+                    # # SEO / Topics (Ensure you added these columns to your Model)
+                    # keywords=keywords, 
+                    # topic_ids=topic_ids,
+                    # made_for_kids=made_for_kids,
 
                     is_active=True,
                     created_at=now,
@@ -222,8 +222,8 @@ def transform_all(channels_raw, videos_raw, about_data):
                     
                     # Meta
                     tags=snip.get("tags", []),
-                    category_id=snip.get("categoryId"), # New: e.g. "20" (Gaming)
-                    live_broadcast_content=snip.get("liveBroadcastContent", "none"), # New
+                    # category_id=snip.get("categoryId"), # New: e.g. "20" (Gaming)
+                    # live_broadcast_content=snip.get("liveBroadcastContent", "none"), # New
                     
                     links=[],
                     language=snip.get("defaultAudioLanguage"),
