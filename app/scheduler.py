@@ -4,5 +4,5 @@ from app.workers.youtube.main_worker import run
 scheduler = BackgroundScheduler()
 
 def start_scheduler():
-    scheduler.add_job(run, "interval", hours=3)
+    scheduler.add_job(run, "interval", hours=1)
     scheduler.start()
