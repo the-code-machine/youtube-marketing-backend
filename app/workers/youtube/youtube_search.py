@@ -1,3 +1,4 @@
+import datetime
 from time import timezone
 import requests
 
@@ -15,9 +16,16 @@ def search_videos(api_key, query, published_after=None):
     }
 
     if published_after:
-        # must be RFC3339
-        published_after_new = published_after.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
-        params["publishedAfter"] = published_after_new
+        # If int → convert from unix timestamp
+        if isinstance(published_after, int):
+            published_after = datetime.utcfromtimestamp(published_after)
+
+        # If string → parse
+        if isinstance(published_after, str):
+            published_after = datetime.fromisoformat(published_after)
+
+        published_after = published_after.replace(tzinfo=timezone.utc)
+        params["publishedAfter"] = published_after.isoformat().replace("+00:00", "Z")
 
     try:
         resp = requests.get(BASE, params=params, timeout=30)
