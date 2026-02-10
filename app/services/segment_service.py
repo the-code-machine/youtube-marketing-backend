@@ -160,9 +160,36 @@ class SegmentService:
         return {"current": curr, "previous": prev, "change_percent": pct, "trend": "up" if curr >= prev else "down"}
 
     def get_segment_kpis(self, segment_id: str, start_date: datetime, end_date: datetime):
+        # 1. Resolve Human-Readable Title
+        title = segment_id.replace("_", " ").title() # Fallback
+        icon = "activity"
+
+        # A. If ID is Database Category (e.g. "1", "2")
+        if segment_id.isdigit():
+            cat = self.db.query(TargetCategory).filter(TargetCategory.id == int(segment_id)).first()
+            if cat:
+                title = cat.name
+                icon = "youtube"
+        
+        # B. If ID is Filter (e.g. "filter_subs_1m")
+        else:
+            # Map of known filters
+            filter_map = {
+                "filter_subs_1m": "Top Creators (1M+)",
+                "filter_subs_100k": "Mid-Tier (100k-1M)",
+                "filter_high_engagement": "High Engagement",
+                "filter_has_email": "Has Email",
+                "filter_top_leads": "Verified Leads",
+                "filter_country_us": "USA Creators"
+            }
+            if segment_id in filter_map:
+                title = filter_map[segment_id]
+                icon = "filter"
+
+        # 2. Return Data with Meta
         return SegmentKPIs(
+            meta={"title": title, "icon": icon}, # <--- Inject Title Here
             total_channels=self._calc_metric(YoutubeChannel, segment_id, start_date, end_date),
-            # This line caused the crash before, now fixed by _get_pk
             total_videos=self._calc_metric(YoutubeVideo, segment_id, start_date, end_date),
             total_leads=self._calc_metric(Lead, segment_id, start_date, end_date),
             total_emails=self._calc_metric(ExtractedEmail, segment_id, start_date, end_date),

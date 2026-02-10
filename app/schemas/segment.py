@@ -11,7 +11,10 @@ class SegmentCard(BaseModel):
     icon: str
     status: str
     total_items: int
-
+    
+class SegmentMeta(BaseModel):
+    title: str
+    icon: str = "activity"
 # --- KPIS ---
 class MetricValue(BaseModel):
     current: int
@@ -20,6 +23,7 @@ class MetricValue(BaseModel):
     trend: str 
 
 class SegmentKPIs(BaseModel):
+    meta: Optional[SegmentMeta] = None
     total_channels: MetricValue
     total_videos: MetricValue
     total_leads: MetricValue
