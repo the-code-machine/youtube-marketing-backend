@@ -1,10 +1,12 @@
-from sqlalchemy import Column, String, Text, Boolean, BigInteger, Integer, Float, TIMESTAMP
+from sqlalchemy import Column, ForeignKey, String, Text, Boolean, BigInteger, Integer, Float, TIMESTAMP
 from app.core.database import Base
-
+from sqlalchemy.orm import relationship
 class YoutubeChannel(Base):
     __tablename__ = "youtube_channels"
 
     channel_id = Column(String, primary_key=True, index=True)
+    category_id = Column(Integer, ForeignKey("target_categories.id"), nullable=True)
+    category = relationship("TargetCategory", backref="channels")
 
     name = Column(Text, nullable=False)
     handle = Column(Text)

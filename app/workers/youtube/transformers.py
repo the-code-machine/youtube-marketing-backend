@@ -17,7 +17,7 @@ def get_thumb(thumbnails):
     return None
 
 
-def transform_all(channels_raw, videos_raw, about_data):
+def transform_all(channels_raw, videos_raw, about_data,category_id=None):
 
     # Initialize payload with the new "metrics" list
     payload = {
@@ -123,6 +123,7 @@ def transform_all(channels_raw, videos_raw, about_data):
                     total_video_count=video_count,
                     total_view_count=view_count,
                     channel_created_at=snip.get("publishedAt"),
+                    category_id=category_id,
                     
                     # Contact Info
                     primary_email=primary_email,

@@ -99,7 +99,7 @@ def run():
                 # D. TRANSFORM & ENRICH
                 # ---------------------------------------------------------
                 # This calculates Engagement Rates & formats data for DB
-                payload = transform_all(channels_raw, videos_raw, about_data)
+                payload = transform_all(channels_raw, videos_raw, about_data,category_id=cat.id)
 
                 # ---------------------------------------------------------
                 # E. BULK WRITE (UPSERT)
