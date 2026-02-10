@@ -2,20 +2,22 @@ from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
 from datetime import datetime
 
+# --- CARDS ---
 class SegmentCard(BaseModel):
-    id: str # Can be "1" (DB ID) or "filter_subs_high" (Logic ID)
+    id: str
     title: str
-    type: str # "youtube_category" | "filter" | "ai_group"
+    type: str
     description: Optional[str] = None
-    icon: str # Frontend icon name (e.g. "music", "clock", "globe")
-    status: str # "active" | "disabled"
+    icon: str
+    status: str
     total_items: int
 
+# --- KPIS ---
 class MetricValue(BaseModel):
     current: int
     previous: int
     change_percent: float
-    trend: str # 'up', 'down', 'neutral'
+    trend: str 
 
 class SegmentKPIs(BaseModel):
     total_channels: MetricValue
@@ -25,21 +27,28 @@ class SegmentKPIs(BaseModel):
     total_instagram: MetricValue
     responses_received: MetricValue
 
+# --- GRAPH ---
 class GraphSeries(BaseModel):
     name: str
-    data: List[Dict[str, Any]] # [{x: timestamp, y: value}]
+    data: List[Dict[str, Any]] # [{x: "2024-01-01", y: 15}]
 
 class GraphResponse(BaseModel):
     granularity: str
     series: List[GraphSeries]
 
+# --- TABLE (UPDATED) ---
 class TableRow(BaseModel):
     channel_id: str
-    channel_name: str
+    name: str                # Updated from channel_name
+    thumbnail_url: Optional[str] = None
     subscribers: int
+    video_count: int         # New
+    view_count: int          # New
+    engagement_score: Optional[float] = None # New
+    
     email: Optional[str] = None
     instagram: Optional[str] = None
-    duration_avg: Optional[int] = None
+    
     country: Optional[str] = None
     category_name: str
     fetched_at: datetime
@@ -50,6 +59,7 @@ class TableResponse(BaseModel):
     total: int
     data: List[TableRow]
 
+# --- AI STUB ---
 class AIStubResponse(BaseModel):
     summary: str
     key_insights: List[str]

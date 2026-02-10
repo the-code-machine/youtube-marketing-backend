@@ -46,22 +46,6 @@ def get_segment_table(
     service = SegmentService(db)
     return service.get_segment_table(segment_id, page, limit, search)
 
-@router.get("/{segment_id}/graphs", response_model=GraphResponse)
-def get_segment_graphs(
-    segment_id: str,
-    startDate: str = Query("30d"),
-    granularity: str = "daily",
-    db: Session = Depends(get_db)
-):
-    # STUB IMPLEMENTATION FOR GRAPH
-    # This prevents frontend error 500 while graph logic is complex
-    return {
-        "granularity": granularity,
-        "series": [
-            {"name": "Channels", "data": []},
-            {"name": "Leads", "data": []}
-        ]
-    }
 
 @router.get("/{segment_id}/export")
 def export_segment(segment_id: str, db: Session = Depends(get_db)):
@@ -73,3 +57,20 @@ def export_segment(segment_id: str, db: Session = Depends(get_db)):
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+    
+# ... (imports remain similar)
+
+@router.get("/{segment_id}/graphs", response_model=GraphResponse)
+def get_segment_graphs(
+    segment_id: str,
+    startDate: str = Query("30d"),
+    granularity: str = "daily",
+    db: Session = Depends(get_db)
+):
+    service = SegmentService(db)
+    
+    end = datetime.utcnow()
+    days = int(startDate.replace("d", "")) if "d" in startDate else 30
+    start = end - timedelta(days=days)
+
+    return service.get_segment_graphs(segment_id, start, end, granularity)
