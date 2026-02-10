@@ -1,21 +1,21 @@
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Union
 from datetime import datetime
 
-# --- GENERIC BUILDING BLOCKS ---
+# --- BASIC BLOCKS ---
 class MetricChange(BaseModel):
     value: int
     previous_value: int
     percentage_change: float
-    trend: str # 'up', 'down', 'neutral'
+    trend: str 
 
 class TimeSeriesPoint(BaseModel):
     timestamp: datetime
-    label: str # "10:00 AM" or "Feb 10"
+    label: str
     value: int
-    category: Optional[str] = None # For multi-line graphs
+    category: Optional[str] = None # Essential for Combined Graph
 
-# --- KPI RESPONSES ---
+# --- KPI STRUCTURES ---
 class DataKPIs(BaseModel):
     total_channels: MetricChange
     total_videos: MetricChange
@@ -29,8 +29,17 @@ class LeadKPIs(BaseModel):
     instagram_dms: MetricChange
     responses_received: MetricChange
 
-class CombinedKPIs(DataKPIs, LeadKPIs):
-    pass
+class CombinedKPIs(BaseModel):
+    # We must explicitly list all fields to avoid Pydantic inheritance issues
+    total_channels: Optional[MetricChange] = None
+    total_videos: Optional[MetricChange] = None
+    total_emails: Optional[MetricChange] = None
+    total_instagram: Optional[MetricChange] = None
+    total_socials: Optional[MetricChange] = None
+    total_leads: Optional[MetricChange] = None
+    emails_sent: Optional[MetricChange] = None
+    instagram_dms: Optional[MetricChange] = None
+    responses_received: Optional[MetricChange] = None
 
 # --- API RESPONSES ---
 class KpiResponse(BaseModel):
@@ -43,10 +52,5 @@ class MainGraphResponse(BaseModel):
     series: List[TimeSeriesPoint]
 
 class MiniGraphResponse(BaseModel):
-    metric_name: str
-    data: List[TimeSeriesPoint]
-
-class SystemStatusResponse(BaseModel):
-    last_worker_run: datetime
-    last_lead_update: datetime
-    system_health: str
+    view_mode: str
+    graphs: dict[str, List[TimeSeriesPoint]]

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.services.dashboard_service import DashboardService
-from app.schemas.dashboard import KpiResponse, MainGraphResponse, SystemStatusResponse
+from app.schemas.dashboard import KpiResponse, MainGraphResponse, MiniGraphResponse
 from datetime import datetime
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard Analytics"])
@@ -14,17 +14,15 @@ def get_db():
     finally:
         db.close()
 
-# 1. KPI Summary
 @router.get("/kpis", response_model=KpiResponse)
 def get_dashboard_kpis(
     viewMode: str = Query("DATA", enum=["DATA", "LEAD", "COMBINED"]),
-    dateRange: str = Query("7d", enum=["24h", "7d", "30d"]),
+    dateRange: str = Query("7d", enum=["24h", "7d", "10d", "30d"]),
     db: Session = Depends(get_db)
 ):
     service = DashboardService(db)
     return service.get_kpis(viewMode, dateRange)
 
-# 2. Main Graph
 @router.get("/main-graph", response_model=MainGraphResponse)
 def get_main_graph(
     viewMode: str = Query("DATA", enum=["DATA", "LEAD", "COMBINED"]),
@@ -34,30 +32,19 @@ def get_main_graph(
     service = DashboardService(db)
     return service.get_main_graph(viewMode, dateRange)
 
-# 3. Mini KPI Graphs (Stubbed for performance, usually calls similar logic to main graph)
-@router.get("/kpi-graphs")
+@router.get("/kpi-graphs", response_model=MiniGraphResponse)
 def get_kpi_graphs(
-    viewMode: str = Query("DATA", enum=["DATA", "LEAD", "COMBINED"]), 
+    viewMode: str = Query("DATA"), 
     db: Session = Depends(get_db)
 ):
-    """
-    Returns the small sparkline data for each KPI card.
-    """
     service = DashboardService(db)
     graphs = service.get_kpi_graphs(viewMode)
-    
-    return {
-        "viewMode": viewMode,
-        "graphs": graphs
-    }
+    return {"view_mode": viewMode, "graphs": graphs}
 
-# 4. System Status
-@router.get("/status", response_model=SystemStatusResponse)
+@router.get("/status")
 def get_system_status():
-    # In production, fetch this from a Redis key or SystemLog table
     return {
         "last_worker_run": datetime.utcnow(),
-        "last_lead_update": datetime.utcnow(),
         "system_health": "operational"
     }
 
