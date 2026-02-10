@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from app.models.youtube_channel import YoutubeChannel
 from app.models.lead import Lead
 from app.models.campaign import CampaignEvent
-from app.models.email_message import ExtractedEmail
+from app.models.email_message import EmailMessage
 
 class DashboardService:
     def __init__(self, db: Session):
@@ -63,7 +63,7 @@ class DashboardService:
         # 1. DATA VIEW GRAPHS
         if view_mode in ["DATA", "COMBINED"]:
             graphs["channelsOverTime"] = self._get_sparkline(YoutubeChannel)
-            graphs["emailsOverTime"] = self._get_sparkline(ExtractedEmail)
+            graphs["emailsOverTime"] = self._get_sparkline(EmailMessage)
             
             # For 'Videos', if you have a Video model
             # graphs["videosOverTime"] = self._get_sparkline(YoutubeVideo) 
