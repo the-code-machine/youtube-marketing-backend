@@ -13,11 +13,24 @@ from app.models.youtube_video import YoutubeVideo
 from app.models.lead import Lead
 from app.models.extracted_email import ExtractedEmail
 from app.models.channel_social import ChannelSocialLink
+from app.models.channel_metrics import ChannelMetrics
 from app.schemas.segment import SegmentCard, SegmentKPIs, GraphResponse, TableResponse
 
 class SegmentService:
     def __init__(self, db: Session):
         self.db = db
+
+    # ---------------------------------------------------------
+    # HELPER: Get Primary Key Dynamically
+    # ---------------------------------------------------------
+    def _get_pk(self, model):
+        if model == YoutubeChannel:
+            return model.channel_id
+        if model == YoutubeVideo:
+            return model.video_id
+        if model == ChannelMetrics:
+            return model.channel_id
+        return model.id
 
     # ---------------------------------------------------------
     # 1. SEGMENT RESOLVER (Smart Filters)
@@ -47,15 +60,15 @@ class SegmentService:
             code = segment_id.replace("filter_country_", "").upper()
             return query.filter(model.country_code == code)
 
-        # New: Engagement Score (> 2% is often considered good for massive channels)
+        # Engagement Score
         if segment_id == "filter_high_engagement":
             return query.filter(model.engagement_score >= 2.0)
 
-        # New: Has Email (Direct Contactable)
+        # Has Email
         if segment_id == "filter_has_email":
             return query.filter(model.has_email == True)
 
-        # New: Verified Leads (High Lead Score)
+        # Verified Leads
         if segment_id == "filter_top_leads":
             return query.filter(model.lead_score >= 8.0)
 
@@ -110,17 +123,18 @@ class SegmentService:
         return cards
 
     # ---------------------------------------------------------
-    # 3. SEGMENT KPIS
+    # 3. SEGMENT KPIS (FIXED)
     # ---------------------------------------------------------
     def _calc_metric(self, model, segment_id, start, end):
-        # Determine PK
-        pk = model.channel_id if model == YoutubeChannel else model.id
+        # FIX: Use helper to get correct PK (video_id vs channel_id vs id)
+        pk = self._get_pk(model)
         
         q_curr = self.db.query(func.count(pk))
         q_prev = self.db.query(func.count(pk))
         
         # Join if needed
         if model != YoutubeChannel:
+            # Assumes model has channel_id (Lead, Video, Email all do)
             if hasattr(model, 'channel_id'):
                 q_curr = q_curr.join(YoutubeChannel, model.channel_id == YoutubeChannel.channel_id)
                 q_prev = q_prev.join(YoutubeChannel, model.channel_id == YoutubeChannel.channel_id)
@@ -148,6 +162,7 @@ class SegmentService:
     def get_segment_kpis(self, segment_id: str, start_date: datetime, end_date: datetime):
         return SegmentKPIs(
             total_channels=self._calc_metric(YoutubeChannel, segment_id, start_date, end_date),
+            # This line caused the crash before, now fixed by _get_pk
             total_videos=self._calc_metric(YoutubeVideo, segment_id, start_date, end_date),
             total_leads=self._calc_metric(Lead, segment_id, start_date, end_date),
             total_emails=self._calc_metric(ExtractedEmail, segment_id, start_date, end_date),
@@ -156,19 +171,20 @@ class SegmentService:
         )
 
     # ---------------------------------------------------------
-    # 4. SEGMENT GRAPHS (Real Implementation)
+    # 4. SEGMENT GRAPHS
     # ---------------------------------------------------------
     def get_segment_graphs(self, segment_id: str, start: datetime, end: datetime, granularity: str = "daily"):
         trunc_type = 'hour' if granularity == 'hourly' else 'day'
         
-        # Helper to get time series for a query
         def get_series(model, label):
+            # FIX: Use helper here too
+            pk = self._get_pk(model)
+            
             query = self.db.query(
                 func.date_trunc(trunc_type, model.created_at).label("bucket"),
-                func.count(model.channel_id if model == YoutubeChannel else model.id)
+                func.count(pk)
             ).filter(model.created_at >= start)
             
-            # Join for filtering if needed
             if model != YoutubeChannel:
                 query = query.join(YoutubeChannel, model.channel_id == YoutubeChannel.channel_id)
             
@@ -189,41 +205,40 @@ class SegmentService:
         )
 
     # ---------------------------------------------------------
-    # 5. SEGMENT TABLE (Enriched)
+    # 5. SEGMENT TABLE
     # ---------------------------------------------------------
     def get_segment_table(self, segment_id: str, page: int, limit: int, search: str = None):
         offset = (page - 1) * limit
         
-        # Select rich fields based on provided model
         query = self.db.query(
             YoutubeChannel.channel_id,
-            YoutubeChannel.name,                # Real name column
-            YoutubeChannel.thumbnail_url,       # Thumbnail
+            YoutubeChannel.name,
+            YoutubeChannel.thumbnail_url,
             YoutubeChannel.subscriber_count,
-            YoutubeChannel.total_video_count,   # Video count
-            YoutubeChannel.total_view_count,    # View count
-            YoutubeChannel.engagement_score,    # Engagement
+            YoutubeChannel.total_video_count,
+            YoutubeChannel.total_view_count,
+            YoutubeChannel.engagement_score,
             YoutubeChannel.country_code,
             YoutubeChannel.created_at.label("fetched_at"),
-            # Contact Info (Direct columns)
             YoutubeChannel.primary_email,
             YoutubeChannel.primary_instagram,
-            # Category Name (Joined)
             TargetCategory.name.label("category_name")
         ).outerjoin(TargetCategory, YoutubeChannel.category_id == TargetCategory.id)
 
-        # Search
         if search:
-            query = query.filter(YoutubeChannel.name.ilike(f"%{search}%"))
+            # Search by name or channel_id
+            query = query.filter(
+                or_(
+                    YoutubeChannel.name.ilike(f"%{search}%"),
+                    YoutubeChannel.channel_id.ilike(f"%{search}%")
+                )
+            )
 
-        # Filter
         query = self._apply_segment_filter(query, segment_id, YoutubeChannel)
 
-        # Pagination
         total = query.count()
         results = query.order_by(desc(YoutubeChannel.subscriber_count)).offset(offset).limit(limit).all()
 
-        # Transform
         data = []
         for r in results:
             data.append({
@@ -247,7 +262,6 @@ class SegmentService:
     # 6. EXPORT
     # ---------------------------------------------------------
     def export_segment_csv(self, segment_id: str):
-        # Re-use enriched table query logic, higher limit
         res = self.get_segment_table(segment_id, 1, 5000)
         
         output = StringIO()

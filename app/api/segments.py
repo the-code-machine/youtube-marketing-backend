@@ -58,7 +58,6 @@ def export_segment(segment_id: str, db: Session = Depends(get_db)):
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
     
-# ... (imports remain similar)
 
 @router.get("/{segment_id}/graphs", response_model=GraphResponse)
 def get_segment_graphs(
