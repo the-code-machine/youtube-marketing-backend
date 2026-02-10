@@ -1,14 +1,25 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from datetime import datetime, timedelta
+from app.models.channel_social import ChannelSocialLink
+from app.models.extracted_email import ExtractedEmail
 from app.models.youtube_channel import YoutubeChannel
 from app.models.lead import Lead
 from app.models.campaign import CampaignEvent
 from app.models.email_message import EmailMessage
+from app.models.youtube_video import YoutubeVideo
 
 class DashboardService:
     def __init__(self, db: Session):
         self.db = db
+    
+    def _pk(self, model):
+        if model == YoutubeChannel:
+            return model.channel_id
+        if model == YoutubeVideo:
+            return model.video_id
+        return model.id
+
 
     def _get_date_range(self, range_key: str):
         now = datetime.utcnow()
@@ -24,35 +35,28 @@ class DashboardService:
         if previous == 0:
             return 100.0 if current > 0 else 0.0
         return round(((current - previous) / previous) * 100, 1)
-
-    # ... inside DashboardService class ...
-
+    
     def _get_sparkline(self, model, days=7):
-        """
-        Fetches a simplified daily count for the last N days.
-        Used for the mini-graphs on KPI cards.
-        """
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=days)
-        
-        # Query: Group by Day, Count IDs
-        results = self.db.query(
-            func.date_trunc('day', model.created_at).label("day"),
-            func.count(model.channel_id if model == YoutubeChannel else model.id)
-        ).filter(
-            model.created_at >= start_date
-        ).group_by(text("day")).order_by(text("day")).all()
+        end = datetime.utcnow()
+        start = end - timedelta(days=days)
 
-        # Format for Frontend (Recharts)
-        data_points = []
-        for r in results:
-            data_points.append({
-                "timestamp": r.day,
-                "label": r.day.strftime("%b %d"), # e.g. "Feb 10"
-                "value": r[1]
-            })
-            
-        return data_points
+        pk = self._pk(model)
+
+        rows = self.db.query(
+        func.date_trunc('day', model.created_at).label("day"),
+        func.count(pk)
+    ).filter(
+        model.created_at >= start
+    ).group_by(text("day")).order_by(text("day")).all()
+
+        return [
+        {
+            "timestamp": r.day,
+            "label": r.day.strftime("%b %d"),
+            "value": r[1]
+        } for r in rows
+    ]
+    
 
     def get_kpi_graphs(self, view_mode: str):
         """
@@ -63,13 +67,11 @@ class DashboardService:
         # 1. DATA VIEW GRAPHS
         if view_mode in ["DATA", "COMBINED"]:
             graphs["channelsOverTime"] = self._get_sparkline(YoutubeChannel)
-            graphs["emailsOverTime"] = self._get_sparkline(EmailMessage)
-            
-            # For 'Videos', if you have a Video model
-            # graphs["videosOverTime"] = self._get_sparkline(YoutubeVideo) 
-            
-            # For 'Socials', we usually count Leads with social links
-            graphs["socialsOverTime"] = self._get_sparkline(Lead) 
+            graphs["videosOverTime"] = self._get_sparkline(YoutubeVideo)
+            graphs["emailsOverTime"] = self._get_sparkline(ExtractedEmail)
+            graphs["socialsOverTime"] = self._get_sparkline(ChannelSocialLink)
+            graphs["leadsOverTime"] = self._get_sparkline(Lead)
+
 
         # 2. LEAD VIEW GRAPHS
         if view_mode in ["LEAD", "COMBINED"]:
@@ -94,7 +96,7 @@ class DashboardService:
     
     def _get_metric(self, model, start, end):
         """Generic helper to count records in a time range"""
-        pk = model.channel_id if model == YoutubeChannel else model.id
+        pk = self._pk(model)
 
         # Current Period
         curr = self.db.query(func.count(pk)).filter(
@@ -125,12 +127,10 @@ class DashboardService:
         # 1. DATA VIEW METRICS
         if view_mode in ["DATA", "COMBINED"]:
             data["total_channels"] = self._get_metric(YoutubeChannel, start, end)
-            data["total_videos"] = {"value": 0, "previous_value": 0, "percentage_change": 0, "trend": "neutral"} # Stub if Video model heavy
-            data["total_emails"] = self._get_metric(EmailMessage, start, end)
-            # Instagram count (Logic: Channels where instagram_username is not null)
-            # This requires a custom query, simplified here for brevity
-            data["total_instagram"] = self._get_metric(Lead, start, end) 
-            data["total_socials"] = self._get_metric(Lead, start, end)
+            data["total_videos"] = self._get_metric(YoutubeVideo, start, end)
+
+            data["total_emails"] = self._get_metric(ExtractedEmail, start, end)
+            data["total_socials"] = self._get_metric(ChannelSocialLink, start, end)
 
         # 2. LEAD VIEW METRICS
         if view_mode in ["LEAD", "COMBINED"]:
@@ -159,7 +159,8 @@ class DashboardService:
 
         # PGSQL Date Truncation
         trunc_type = 'hour' if granularity == 'hour' else 'day'
-        pk = model.channel_id if model == YoutubeChannel else model.id
+        pk = self._pk(model)
+
         results = self.db.query(
             func.date_trunc(trunc_type, model.created_at).label("time_bucket"),
             func.count(pk)
