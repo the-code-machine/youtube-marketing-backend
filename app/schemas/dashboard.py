@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
 
 # --- BASIC BLOCKS ---
@@ -49,7 +49,8 @@ class KpiResponse(BaseModel):
 class MainGraphResponse(BaseModel):
     view_mode: str
     granularity: str
-    series: List[TimeSeriesPoint]
+    # Changed from List[TimeSeriesPoint] to List[Dict] to allow dynamic keys like "Channels", "Emails", etc.
+    series: List[Dict[str, Any]]
 
 class MiniGraphResponse(BaseModel):
     view_mode: str
