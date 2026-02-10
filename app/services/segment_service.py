@@ -19,12 +19,11 @@ class SegmentService:
         self.db = db
 
     # ---------------------------------------------------------
-    # 1. SEGMENT RESOLVER (Fixed to use ONLY existing fields)
+    # 1. SEGMENT RESOLVER
     # ---------------------------------------------------------
     def _apply_segment_filter(self, query, segment_id: str, model=YoutubeChannel):
         """
         Parses the segment_id and applies the correct SQLAlchemy filter.
-        Strictly uses existing DB columns.
         """
         # A. Database Categories (IDs are integers)
         if segment_id.isdigit():
@@ -34,33 +33,33 @@ class SegmentService:
         if segment_id == "uncategorized":
             return query.filter(model.category_id == None)
 
-        # C. Logic Filters (String IDs)
+        # C. Logic Filters
         
-        # 1. Subscriber Filters (Field: subscriber_count exists)
+        # 1. Subscriber Filters
         if segment_id == "filter_subs_1m":
             return query.filter(model.subscriber_count >= 1000000)
         
         if segment_id == "filter_subs_100k":
             return query.filter(model.subscriber_count.between(100000, 999999))
         
-        # 2. Country Filter (Field: country_code exists)
+        # 2. Country Filter
         if segment_id.startswith("filter_country_"):
             country_code = segment_id.replace("filter_country_", "").upper()
             return query.filter(model.country_code == country_code)
 
-        # 3. AI Suggested (Field: ai_lead_score exists on ChannelMetrics)
+        # 3. AI Suggested
         # We must join ChannelMetrics if we are querying YoutubeChannel
         if segment_id == "filter_ai_suggested":
             # Only apply if we are querying the Channel model directly
             if model == YoutubeChannel:
+                # We check if the join is already present to avoid DuplicateAlias error isn't trivial in basic SQLAlchemy
+                # So we assume the caller hasn't joined it yet, OR we use a distinct join strategy.
+                # Since we fixed the caller below, a simple join is fine here.
                 return query.join(
                     ChannelMetrics, 
                     YoutubeChannel.channel_id == ChannelMetrics.channel_id
-                ).filter(ChannelMetrics.ai_lead_score >= 8.0) # High score threshold
+                ).filter(ChannelMetrics.ai_lead_score >= 8.0) 
 
-        # 4. REMOVED: filter_duration_long 
-        # Reason: 'avg_video_duration' column does not exist on YoutubeChannel.
-        
         return query
 
     # ---------------------------------------------------------
@@ -69,13 +68,12 @@ class SegmentService:
     def get_all_segments(self) -> List[SegmentCard]:
         cards = []
 
-        # 1. Fetch DB Categories (The "Scraping Targets")
+        # 1. Fetch DB Categories
         db_cats = self.db.query(TargetCategory).filter(TargetCategory.is_active == True).all()
         
         for i, cat in enumerate(db_cats):
             status = "active" if i < 4 else "passive"
             
-            # Count items
             count = self.db.query(func.count(YoutubeChannel.channel_id))\
                 .filter(YoutubeChannel.category_id == cat.id).scalar() or 0
 
@@ -90,7 +88,6 @@ class SegmentService:
             ))
 
         # 2. Add Logic Filters 
-        # Only add filters supported by _apply_segment_filter
         filters = [
             ("filter_subs_1m", "Top Creators (1M+)", "star", "Elite Tier Channels"),
             ("filter_subs_100k", "Mid-Tier (100k-1M)", "trending", "High Growth Potential"),
@@ -99,12 +96,12 @@ class SegmentService:
         ]
 
         for fid, ftitle, ficon, fdesc in filters:
+            # FIX: Start with a clean query on YoutubeChannel
             q = self.db.query(func.count(YoutubeChannel.channel_id))
             
-            # Handle the specific join logic for AI count
-            if fid == "filter_ai_suggested":
-                q = q.join(ChannelMetrics, YoutubeChannel.channel_id == ChannelMetrics.channel_id)
-                
+            # REMOVED MANUAL JOIN HERE. 
+            # _apply_segment_filter will handle the join for "filter_ai_suggested" internally.
+            
             count = self._apply_segment_filter(q, fid, YoutubeChannel).scalar() or 0
             
             cards.append(SegmentCard(
@@ -128,22 +125,12 @@ class SegmentService:
         q_prev = self.db.query(func.count(model.id))
         
         # Apply Logic for Channel-related models
-        # If filtering Leads/Emails by segment, we must JOIN YoutubeChannel
         if model != YoutubeChannel:
-            # Assumes Lead/Email has channel_id to link back
+            # Join back to Channel to filter by segment
             if hasattr(model, 'channel_id'):
                 q_curr = q_curr.join(YoutubeChannel, model.channel_id == YoutubeChannel.channel_id)
                 q_prev = q_prev.join(YoutubeChannel, model.channel_id == YoutubeChannel.channel_id)
                 
-                # If filter is AI, join Metrics too
-                if segment_id == "filter_ai_suggested":
-                    q_curr = q_curr.join(ChannelMetrics, YoutubeChannel.channel_id == ChannelMetrics.channel_id)
-                    q_prev = q_prev.join(ChannelMetrics, YoutubeChannel.channel_id == ChannelMetrics.channel_id)
-        
-        elif segment_id == "filter_ai_suggested":
-             q_curr = q_curr.join(ChannelMetrics, YoutubeChannel.channel_id == ChannelMetrics.channel_id)
-             q_prev = q_prev.join(ChannelMetrics, YoutubeChannel.channel_id == ChannelMetrics.channel_id)
-
         # Apply Time & Segment Filters
         q_curr = self._apply_segment_filter(q_curr, segment_id, YoutubeChannel)
         q_curr = q_curr.filter(model.created_at >= start, model.created_at <= end)
@@ -170,7 +157,6 @@ class SegmentService:
     def get_segment_kpis(self, segment_id: str, start_date: datetime, end_date: datetime):
         return SegmentKPIs(
             total_channels=self._calc_metric(YoutubeChannel, segment_id, start_date, end_date),
-            # Stub for videos (Video model doesn't have ID column in standard way usually, using count(*))
             total_videos={"current": 0, "previous": 0, "change_percent": 0, "trend": "neutral"}, 
             total_leads=self._calc_metric(Lead, segment_id, start_date, end_date),
             total_emails=self._calc_metric(ExtractedEmail, segment_id, start_date, end_date),
@@ -184,8 +170,6 @@ class SegmentService:
     def get_segment_table(self, segment_id: str, page: int, limit: int, search: str = None):
         offset = (page - 1) * limit
         
-        # Base Query: Select Columns
-        # We perform an OUTER JOIN on TargetCategory to allow 'uncategorized' or 'filter' views to work
         query = self.db.query(
             YoutubeChannel.channel_id,
             YoutubeChannel.title,
@@ -195,21 +179,17 @@ class SegmentService:
             TargetCategory.name.label("category_name")
         ).outerjoin(TargetCategory, YoutubeChannel.category_id == TargetCategory.id)
 
-        # Apply Search
         if search:
             query = query.filter(YoutubeChannel.title.ilike(f"%{search}%"))
 
-        # Apply Segment Logic
+        # Apply Segment Logic (Includes AI join if needed)
         query = self._apply_segment_filter(query, segment_id, YoutubeChannel)
 
-        # Sorting & Pagination
         total = query.count()
         results = query.order_by(desc(YoutubeChannel.subscriber_count)).offset(offset).limit(limit).all()
 
-        # Transform
         data = []
         for r in results:
-            # Fetch Lead Info for Contact Columns
             lead = self.db.query(Lead).filter(Lead.channel_id == r.channel_id).first()
             email = lead.primary_email if lead else None
             ig = lead.instagram_username if lead else None
