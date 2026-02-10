@@ -1,6 +1,7 @@
 from datetime import datetime
 from sqlalchemy.dialects.postgresql import insert
-from app.models import YoutubeChannel, YoutubeVideo, ExtractedEmail, ChannelSocialLink, ChannelMetrics
+from app.models import YoutubeChannel, YoutubeVideo, ExtractedEmail, ChannelSocialLink
+from app.models.channel_metrics import ChannelMetrics
 
 def obj_to_dict(obj):
     # This automatically grabs 'category_id' if it exists in your Model definition
