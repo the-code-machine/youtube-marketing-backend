@@ -56,7 +56,8 @@ from app.models.saved_filter import SavedFilter
 from app.models.saved_view import SavedView
 from app.models.template_usage import TemplateUsage
 from app.models.target_category import TargetCategory
-
+# --- ADD THESE NEW IMPORTS ---
+from app.models.campaign import Campaign, CampaignLead, CampaignEvent, OutreachTemplate
 target_metadata = Base.metadata
 
 

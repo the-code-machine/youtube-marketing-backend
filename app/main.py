@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from app.core.database import Base, engine
 from app.scheduler import start_scheduler, scheduler
 from app.workers.youtube.main_worker import run as youtube_worker_run
-from app.api import auth, youtube, stats, categories
+from app.api import auth, dashboard, youtube, stats, categories
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import *
@@ -37,6 +37,7 @@ app.include_router(auth.router) # Register the new router
 app.include_router(categories.router)
 app.include_router(youtube.router)
 app.include_router(stats.router)
+app.include_router(dashboard.router)
 
 
 # -------------------------
