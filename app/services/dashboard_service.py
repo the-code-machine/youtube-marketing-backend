@@ -38,7 +38,7 @@ class DashboardService:
         # Query: Group by Day, Count IDs
         results = self.db.query(
             func.date_trunc('day', model.created_at).label("day"),
-            func.count(model.id)
+            func.count(model.channel_id if model == YoutubeChannel else model.id)
         ).filter(
             model.created_at >= start_date
         ).group_by(text("day")).order_by(text("day")).all()
@@ -94,8 +94,10 @@ class DashboardService:
     
     def _get_metric(self, model, start, end):
         """Generic helper to count records in a time range"""
+        pk = model.channel_id if model == YoutubeChannel else model.id
+
         # Current Period
-        curr = self.db.query(func.count(model.id)).filter(
+        curr = self.db.query(func.count(pk)).filter(
             model.created_at >= start, 
             model.created_at <= end
         ).scalar() or 0
@@ -103,7 +105,7 @@ class DashboardService:
         # Previous Period (Same duration back)
         duration = end - start
         prev_start = start - duration
-        prev = self.db.query(func.count(model.id)).filter(
+        prev = self.db.query(func.count(pk)).filter(
             model.created_at >= prev_start, 
             model.created_at < start
         ).scalar() or 0
@@ -124,7 +126,7 @@ class DashboardService:
         if view_mode in ["DATA", "COMBINED"]:
             data["total_channels"] = self._get_metric(YoutubeChannel, start, end)
             data["total_videos"] = {"value": 0, "previous_value": 0, "percentage_change": 0, "trend": "neutral"} # Stub if Video model heavy
-            data["total_emails"] = self._get_metric(ExtractedEmail, start, end)
+            data["total_emails"] = self._get_metric(EmailMessage, start, end)
             # Instagram count (Logic: Channels where instagram_username is not null)
             # This requires a custom query, simplified here for brevity
             data["total_instagram"] = self._get_metric(Lead, start, end) 
@@ -157,10 +159,10 @@ class DashboardService:
 
         # PGSQL Date Truncation
         trunc_type = 'hour' if granularity == 'hour' else 'day'
-        
+        pk = model.channel_id if model == YoutubeChannel else model.id
         results = self.db.query(
             func.date_trunc(trunc_type, model.created_at).label("time_bucket"),
-            func.count(model.id)
+            func.count(pk)
         ).filter(
             model.created_at >= start
         ).group_by(text("time_bucket")).order_by(text("time_bucket")).all()
