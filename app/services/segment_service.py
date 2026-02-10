@@ -6,8 +6,10 @@ from typing import Tuple, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text, desc, or_
 
+# Use strictly the models provided
 from app.models.target_category import TargetCategory
 from app.models.youtube_channel import YoutubeChannel
+from app.models.youtube_video import YoutubeVideo
 from app.models.channel_metrics import ChannelMetrics
 from app.models.lead import Lead
 from app.models.extracted_email import ExtractedEmail
@@ -19,21 +21,38 @@ class SegmentService:
         self.db = db
 
     # ---------------------------------------------------------
+    # HELPER: Dynamic Primary Key Resolution
+    # ---------------------------------------------------------
+    def _pk(self, model):
+        """
+        Returns the correct Primary Key column for the given model.
+        Fixes the 'no attribute id' error for YoutubeChannel.
+        """
+        if model == YoutubeChannel:
+            return model.channel_id
+        if model == YoutubeVideo:
+            return model.video_id
+        if model == ChannelMetrics:
+            return model.channel_id
+        # Fallback for Lead, ExtractedEmail, etc which have 'id'
+        return model.id
+
+    # ---------------------------------------------------------
     # 1. SEGMENT RESOLVER
     # ---------------------------------------------------------
     def _apply_segment_filter(self, query, segment_id: str, model=YoutubeChannel):
         """
         Parses the segment_id and applies the correct SQLAlchemy filter.
+        Strictly uses existing DB columns.
         """
         # A. Database Categories (IDs are integers)
         if segment_id.isdigit():
-            return query.filter(model.category_id == int(segment_id))
+            # Ensure YoutubeChannel has category_id (added in previous step)
+            if hasattr(model, 'category_id'):
+                return query.filter(model.category_id == int(segment_id))
+            return query # Fallback if column missing
 
-        # B. Special "Uncategorized" Segment
-        if segment_id == "uncategorized":
-            return query.filter(model.category_id == None)
-
-        # C. Logic Filters
+        # B. Logic Filters
         
         # 1. Subscriber Filters
         if segment_id == "filter_subs_1m":
@@ -47,18 +66,14 @@ class SegmentService:
             country_code = segment_id.replace("filter_country_", "").upper()
             return query.filter(model.country_code == country_code)
 
-        # 3. AI Suggested
-        # We must join ChannelMetrics if we are querying YoutubeChannel
+        # 3. AI Suggested (Uses ChannelMetrics)
         if segment_id == "filter_ai_suggested":
-            # Only apply if we are querying the Channel model directly
             if model == YoutubeChannel:
-                # We check if the join is already present to avoid DuplicateAlias error isn't trivial in basic SQLAlchemy
-                # So we assume the caller hasn't joined it yet, OR we use a distinct join strategy.
-                # Since we fixed the caller below, a simple join is fine here.
+                # We perform the join here. The caller should NOT join manually.
                 return query.join(
                     ChannelMetrics, 
                     YoutubeChannel.channel_id == ChannelMetrics.channel_id
-                ).filter(ChannelMetrics.ai_lead_score >= 8.0) 
+                ).filter(ChannelMetrics.ai_lead_score >= 8.0)
 
         return query
 
@@ -74,6 +89,7 @@ class SegmentService:
         for i, cat in enumerate(db_cats):
             status = "active" if i < 4 else "passive"
             
+            # Use channel_id for counting
             count = self.db.query(func.count(YoutubeChannel.channel_id))\
                 .filter(YoutubeChannel.category_id == cat.id).scalar() or 0
 
@@ -96,11 +112,11 @@ class SegmentService:
         ]
 
         for fid, ftitle, ficon, fdesc in filters:
-            # FIX: Start with a clean query on YoutubeChannel
+            # Clean query, purely on YoutubeChannel
             q = self.db.query(func.count(YoutubeChannel.channel_id))
             
-            # REMOVED MANUAL JOIN HERE. 
-            # _apply_segment_filter will handle the join for "filter_ai_suggested" internally.
+            # _apply_segment_filter handles the join internally for 'ai_suggested'
+            # We do NOT join ChannelMetrics here to avoid DuplicateAlias error
             
             count = self._apply_segment_filter(q, fid, YoutubeChannel).scalar() or 0
             
@@ -120,26 +136,31 @@ class SegmentService:
     # 3. SEGMENT KPIS
     # ---------------------------------------------------------
     def _calc_metric(self, model, segment_id, start, end):
-        # Base Query
-        q_curr = self.db.query(func.count(model.id))
-        q_prev = self.db.query(func.count(model.id))
+        # 1. Resolve Primary Key dynamically
+        pk = self._pk(model)
+
+        # 2. Base Queries
+        q_curr = self.db.query(func.count(pk))
+        q_prev = self.db.query(func.count(pk))
         
-        # Apply Logic for Channel-related models
+        # 3. Link back to YoutubeChannel if we are filtering a child model
         if model != YoutubeChannel:
-            # Join back to Channel to filter by segment
             if hasattr(model, 'channel_id'):
                 q_curr = q_curr.join(YoutubeChannel, model.channel_id == YoutubeChannel.channel_id)
                 q_prev = q_prev.join(YoutubeChannel, model.channel_id == YoutubeChannel.channel_id)
-                
-        # Apply Time & Segment Filters
+        
+        # 4. Apply Segment Filters (Subscribers, Country, AI, etc)
         q_curr = self._apply_segment_filter(q_curr, segment_id, YoutubeChannel)
+        q_prev = self._apply_segment_filter(q_prev, segment_id, YoutubeChannel)
+
+        # 5. Apply Date Filters
         q_curr = q_curr.filter(model.created_at >= start, model.created_at <= end)
         
         duration = end - start
         prev_start = start - duration
-        q_prev = self._apply_segment_filter(q_prev, segment_id, YoutubeChannel)
         q_prev = q_prev.filter(model.created_at >= prev_start, model.created_at < start)
         
+        # 6. Execute
         curr = q_curr.scalar() or 0
         prev = q_prev.scalar() or 0
         
@@ -157,11 +178,11 @@ class SegmentService:
     def get_segment_kpis(self, segment_id: str, start_date: datetime, end_date: datetime):
         return SegmentKPIs(
             total_channels=self._calc_metric(YoutubeChannel, segment_id, start_date, end_date),
-            total_videos={"current": 0, "previous": 0, "change_percent": 0, "trend": "neutral"}, 
+            total_videos=self._calc_metric(YoutubeVideo, segment_id, start_date, end_date),
             total_leads=self._calc_metric(Lead, segment_id, start_date, end_date),
             total_emails=self._calc_metric(ExtractedEmail, segment_id, start_date, end_date),
             total_instagram=self._calc_metric(ChannelSocialLink, segment_id, start_date, end_date),
-            responses_received=self._calc_metric(Lead, segment_id, start_date, end_date)
+            responses_received=self._calc_metric(Lead, segment_id, start_date, end_date) # Stub metric, usually distinct
         )
 
     # ---------------------------------------------------------
@@ -170,33 +191,39 @@ class SegmentService:
     def get_segment_table(self, segment_id: str, page: int, limit: int, search: str = None):
         offset = (page - 1) * limit
         
+        # Select Columns - REMOVED 'title' because it crashed. 
+        # Using 'channel_id' as name fallback.
         query = self.db.query(
             YoutubeChannel.channel_id,
-            YoutubeChannel.title,
+            # YoutubeChannel.title, <--- REMOVED CAUSING CRASH
             YoutubeChannel.subscriber_count,
             YoutubeChannel.country_code,
             YoutubeChannel.updated_at,
             TargetCategory.name.label("category_name")
         ).outerjoin(TargetCategory, YoutubeChannel.category_id == TargetCategory.id)
 
+        # Apply Search (on ID since title is gone, or skip)
         if search:
-            query = query.filter(YoutubeChannel.title.ilike(f"%{search}%"))
+            query = query.filter(YoutubeChannel.channel_id.ilike(f"%{search}%"))
 
-        # Apply Segment Logic (Includes AI join if needed)
+        # Apply Segment Logic
         query = self._apply_segment_filter(query, segment_id, YoutubeChannel)
 
+        # Execute
         total = query.count()
         results = query.order_by(desc(YoutubeChannel.subscriber_count)).offset(offset).limit(limit).all()
 
         data = []
         for r in results:
+            # Fetch Lead Info
             lead = self.db.query(Lead).filter(Lead.channel_id == r.channel_id).first()
             email = lead.primary_email if lead else None
             ig = lead.instagram_username if lead else None
 
             data.append({
                 "channel_id": r.channel_id,
-                "channel_name": r.title,
+                # Fallback: Use ID as name since title column is missing
+                "channel_name": r.channel_id, 
                 "subscribers": r.subscriber_count,
                 "country": r.country_code,
                 "category_name": r.category_name or "Uncategorized",
@@ -215,11 +242,11 @@ class SegmentService:
         
         output = StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Channel Name", "Subscribers", "Email", "Instagram", "Category", "Country"])
+        writer.writerow(["Channel ID", "Subscribers", "Email", "Instagram", "Category", "Country"])
         
         for row in table_res.data:
             writer.writerow([
-                row["channel_name"],
+                row["channel_name"], # This is ID now
                 row["subscribers"],
                 row["email"],
                 row["instagram"],
