@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, or_
 from app.models.campaign import CampaignLead, Campaign
