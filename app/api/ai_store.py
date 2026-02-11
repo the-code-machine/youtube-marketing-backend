@@ -13,7 +13,8 @@ def get_db():
     finally:
         db.close()
 
-@router.get("/", response_model=AIStoreResponse)
+# ✅ FIX: Changed "/" to "" so it accepts /api/ai-store without redirecting
+@router.get("", response_model=AIStoreResponse)
 def get_ai_store_items(
     page: int = 1, 
     limit: int = 20, 
