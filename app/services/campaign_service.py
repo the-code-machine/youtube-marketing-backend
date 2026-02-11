@@ -123,6 +123,7 @@ class CampaignService:
             self.db.add_all(new_links)
         
         self.db.commit()
+        self.db.refresh(campaign)
         return campaign
     
     def get_campaign_kpis(self):
