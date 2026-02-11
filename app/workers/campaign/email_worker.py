@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.core.config import settings
-from app.models.campaign import Campaign, CampaignLead, CampaignEvent, OutreachTemplate
+from app.models.campaign import Campaign, CampaignLead, CampaignEvent
+# Note: Campaign now links to EmailTemplate via `email_template` relationship
 from app.services.email_service import EmailService
 
 # Configure Logging
@@ -31,12 +32,13 @@ def check_daily_limit(db: Session) -> bool:
 def process_single_email(lead_data, email_service):
     """
     Helper function to run inside a Thread.
+    Sends the actual email via SMTP.
     """
-    campaign_lead, subject, body, to_email = lead_data
+    campaign_lead_id, subject, html_body, to_email = lead_data
     
-    success, error = email_service.send_email(to_email, subject, body)
+    success, error = email_service.send_email(to_email, subject, html_body)
     
-    return campaign_lead.id, success, error
+    return campaign_lead_id, success, error
 
 def run_email_campaigns():
     db = SessionLocal()
@@ -48,6 +50,7 @@ def run_email_campaigns():
             return
 
         # 2. Find Active Campaigns (Email Platform)
+        # We only want campaigns that are explicitly set to "running"
         active_campaigns = db.query(Campaign).filter(
             Campaign.status == "running",
             Campaign.platform == "email"
@@ -58,30 +61,42 @@ def run_email_campaigns():
             return
 
         # 3. Collect Leads to Send
-        # We process batches of 20 to prevent memory overload
         leads_to_process = []
         
         for campaign in active_campaigns:
-            # Find leads that are 'ready_to_send' 
-            # (Meaning AI has generated content OR it's a static template)
+            # Fetch the HTML wrapper from the template
+            # Fallback to a simple div if body is missing
+            html_template = campaign.email_template.body or "<div style='font-family: sans-serif;'>{{content}}</div>"
+            
+            # Find leads that are ready.
+            # We look for 'review_ready' (AI done) OR 'ready_to_send' (Manual override)
             pending_leads = db.query(CampaignLead).filter(
-                CampaignLead.campaign_id == campaign.id,
-                CampaignLead.status == "ready_to_send"
-            ).limit(20).all() # Small batch per run
+    CampaignLead.campaign_id == campaign.id,
+    CampaignLead.status == "ready_to_send" 
+).limit(20).all()
             
             for pl in pending_leads:
-                # Use AI content if available, else static template fallback
-                subject = pl.ai_generated_subject or campaign.template.subject_template
-                body = pl.ai_generated_body or campaign.template.body_template
+                # A. Get Content
+                # Use AI content if exists, otherwise fallback to template static subject
+                subject = pl.ai_generated_subject or campaign.email_template.subject
+                raw_body_text = pl.ai_generated_body or "Hi there, (Content Missing)"
                 
-                # Basic Variable Replacement (if not AI generated)
-                if not pl.ai_generated_body:
-                    # You would expand this logic for proper variable injection
-                    body = body.replace("{name}", pl.lead.channel_id) 
+                # B. HTML Merge Logic
+                # Convert newlines to <br> for HTML rendering
+                formatted_text = raw_body_text.replace("\n", "<br/>")
                 
-                # Check if we have an email
+                # Inject text into the HTML container
+                # Supports {{content}} or {{body}} placeholders
+                final_html = html_template.replace("{{content}}", formatted_text).replace("{{body}}", formatted_text)
+                
+                # Basic variable replacement for static parts (e.g. footer)
+                # You can extend this dictionary
+                final_html = final_html.replace("{channel_name}", pl.lead.channel_id)
+
+                # C. Add to Queue
                 if pl.lead.primary_email:
-                    leads_to_process.append((pl, subject, body, pl.lead.primary_email))
+                    # We create a tuple of data to pass to the thread
+                    leads_to_process.append((pl.id, subject, final_html, pl.lead.primary_email))
                 else:
                     pl.status = "failed"
                     pl.error_message = "No email address found"
@@ -109,7 +124,7 @@ def run_email_campaigns():
                     lead_record.status = "sent"
                     lead_record.sent_at = datetime.utcnow()
                     
-                    # Log Event
+                    # Log Success Event
                     event = CampaignEvent(
                         campaign_lead_id=lead_id,
                         event_type="sent_email",
@@ -124,10 +139,11 @@ def run_email_campaigns():
                     lead_record.status = "failed"
                     lead_record.error_message = error
                     
+                    # Log Failure Event
                     event = CampaignEvent(
                         campaign_lead_id=lead_id,
                         event_type="failed_email",
-                        metadata_json={"error": error},
+                        metadata_json={"error": str(error)},
                         created_at=datetime.utcnow()
                     )
                     db.add(event)
@@ -135,7 +151,7 @@ def run_email_campaigns():
                 db.commit()
 
     except Exception as e:
-        logger.error(f"Critical Worker Error: {e}")
+        logger.error(f"Critical Email Worker Error: {e}")
         db.rollback()
     finally:
         db.close()

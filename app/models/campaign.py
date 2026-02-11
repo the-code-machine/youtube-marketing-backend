@@ -44,7 +44,11 @@ class Campaign(Base):
     
     # Configuration
     platform = Column(String) # 'email', 'instagram'
-    template_id = Column(Integer, ForeignKey("outreach_templates.id"))
+    template_id = Column(Integer, ForeignKey("email_templates.id"))
+    
+    # Relationship
+    email_template = relationship("EmailTemplate", back_populates="campaigns")
+    leads = relationship("CampaignLead", back_populates="campaign")
     
     # Scheduling
     scheduled_start = Column(TIMESTAMP, nullable=True)
