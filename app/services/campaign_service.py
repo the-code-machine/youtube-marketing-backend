@@ -6,6 +6,7 @@ from sqlalchemy import func, desc, or_
 
 # MODELS
 from app.models.campaign import Campaign, CampaignLead, CampaignEvent
+from app.models.email_template import EmailTemplate
 from app.models.lead import Lead
 from app.models.youtube_channel import YoutubeChannel 
 
@@ -103,7 +104,7 @@ class CampaignService:
         self.db.flush()
 
         # Fetch template to check if AI is needed
-        template = self.db.query(OutreachTemplate).get(template_id)
+        template = self.db.query(EmailTemplate()).get(template_id)
         # If template has AI instructions, we queue for generation. Otherwise ready.
         # (Note: Using getattr to be safe if model changed)
         has_ai = getattr(template, 'is_ai_powered', False) or getattr(template, 'ai_prompt_instructions', None)
