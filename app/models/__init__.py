@@ -19,7 +19,7 @@ __all__ = [
     "DailyStats",
     "CountryStats",
     "CategoryStats",
-    "Lead"
+    "Lead",
     "AIUsageLog",
     "EmailMessage",
     "AutomationJob"
