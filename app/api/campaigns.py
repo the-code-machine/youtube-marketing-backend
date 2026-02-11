@@ -1,16 +1,22 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List, Optional
-from pydantic import BaseModel
-
 from app.core.database import SessionLocal
+
+# Services & Workers
 from app.services.campaign_service import CampaignService
 from app.workers.campaign.email_worker import run_email_campaigns
 from app.workers.campaign.ai_generator import run_ai_generation
 
-# Models need to be imported so SQLAlchemy knows them
-from app.models.campaign import Campaign, OutreachTemplate
+# Models & Schemas
+from app.models.campaign import Campaign, CampaignLead
+from app.models.email_template import EmailTemplate
+from app.schemas.campaign import (
+    CreateCampaignRequest, 
+    LeadSelectionResponse, # <--- NEW SCHEMA IMPORT
+    LeadKPIs, 
+    CampaignKPIs
+)
 
 router = APIRouter(prefix="/api", tags=["Campaign Module"])
 
@@ -21,29 +27,22 @@ def get_db():
     finally:
         db.close()
 
-# --- Pydantic Request Models ---
-class CreateCampaignRequest(BaseModel):
-    name: str
-    platform: str # 'email' or 'instagram'
-    template_id: int
-    lead_ids: List[int]
-
 # =========================================================
 # 1. LEAD SELECTION APIs
 # =========================================================
 
-@router.get("/leads")
+@router.get("/leads", response_model=LeadSelectionResponse) # <--- USE NEW MODEL
 def get_leads_table(
     page: int = 1, 
     limit: int = 20, 
     search: str = None, 
-    filter: str = None, # 'email', 'instagram'
+    filter: str = None, 
     db: Session = Depends(get_db)
 ):
     service = CampaignService(db)
     return service.get_leads_selection(page, limit, search, filter)
 
-@router.get("/leads/kpis")
+@router.get("/leads/kpis", response_model=LeadKPIs)
 def get_leads_kpis(db: Session = Depends(get_db)):
     service = CampaignService(db)
     return service.get_lead_kpis()
@@ -52,14 +51,13 @@ def get_leads_kpis(db: Session = Depends(get_db)):
 # 2. CAMPAIGN APIs
 # =========================================================
 
-@router.get("/campaigns/kpis")
+@router.get("/campaigns/kpis", response_model=CampaignKPIs)
 def get_campaign_dashboard_kpis(db: Session = Depends(get_db)):
     service = CampaignService(db)
     return service.get_campaign_kpis()
 
 @router.get("/campaigns")
 def list_campaigns(db: Session = Depends(get_db)):
-    # Return list with basic stats
     return db.query(Campaign).order_by(Campaign.created_at.desc()).all()
 
 @router.get("/campaigns/{campaign_id}")
@@ -67,11 +65,13 @@ def get_campaign_detail(campaign_id: int, db: Session = Depends(get_db)):
     campaign = db.query(Campaign).get(campaign_id)
     if not campaign:
         raise HTTPException(404, "Campaign not found")
-    # Helper to count leads by status
+    
+    # Calculate live stats
     stats = {
         "total": len(campaign.leads),
         "sent": sum(1 for l in campaign.leads if l.status == 'sent'),
         "queued": sum(1 for l in campaign.leads if l.status == 'queued'),
+        "review_ready": sum(1 for l in campaign.leads if l.status == 'review_ready'),
         "failed": sum(1 for l in campaign.leads if l.status == 'failed'),
     }
     return {"campaign": campaign, "stats": stats}
@@ -90,14 +90,16 @@ def create_campaign(
         payload.lead_ids
     )
     
-    # If template is AI powered, trigger AI generation immediately
-    if new_campaign.template.is_ai_powered:
+    # Check if template has AI instructions. If so, trigger AI worker.
+    # Note: We need to fetch the template to be sure
+    template = db.query(EmailTemplate).get(payload.template_id)
+    if template and template.ai_prompt_instructions:
         background_tasks.add_task(run_ai_generation)
         
     return new_campaign
 
 # =========================================================
-# 3. ACTIONS & EXPORT
+# 3. ACTIONS
 # =========================================================
 
 @router.post("/campaigns/{campaign_id}/start")
@@ -109,7 +111,7 @@ def start_campaign(campaign_id: int, background_tasks: BackgroundTasks, db: Sess
     campaign.status = "running"
     db.commit()
     
-    # Trigger the Email Worker
+    # Trigger Email Worker
     if campaign.platform == 'email':
         background_tasks.add_task(run_email_campaigns)
         
@@ -126,10 +128,3 @@ def export_campaign(campaign_id: int, db: Session = Depends(get_db)):
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
-
-# =========================================================
-# 4. TEMPLATE API (Helper for creation)
-# =========================================================
-@router.get("/templates")
-def get_templates(db: Session = Depends(get_db)):
-    return db.query(OutreachTemplate).all()
