@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, or_
 
 # MODELS
-from app.models.campaign import Campaign, CampaignLead, CampaignEvent, OutreachTemplate
+from app.models.campaign import Campaign, CampaignLead, CampaignEvent
 from app.models.lead import Lead
 from app.models.youtube_channel import YoutubeChannel 
 
