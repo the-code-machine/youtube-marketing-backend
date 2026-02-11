@@ -30,7 +30,7 @@ class CampaignService:
             Lead.status,
             Lead.created_at,
             # Joined Columns
-            YoutubeChannel.name.label("title"),
+            YoutubeChannel.name,
             YoutubeChannel.thumbnail_url,
             YoutubeChannel.subscriber_count,
             YoutubeChannel.total_video_count
