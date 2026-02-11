@@ -4,16 +4,16 @@ from datetime import datetime
 
 # --- 1. RICH LEAD RESPONSE (For Table) ---
 class LeadSelectionItem(BaseModel):
-    id: int               # Lead ID (for selection)
-    channel_id: str       # YouTube Channel ID
-    title: str            # Channel Name/Title
-    thumbnail_url: Optional[str] = None
+    id: int               # Lead ID (used for selection)
+    channel_id: str       # YouTube ID
     
-    # Metrics
+    # Rich Data from YoutubeChannel Table
+    title: Optional[str] = "Unknown Channel"
+    thumbnail_url: Optional[str] = None
     subscriber_count: Optional[int] = 0
     video_count: Optional[int] = 0
     
-    # Contact Info
+    # Contact Info from Lead Table
     email: Optional[str] = None
     instagram: Optional[str] = None
     
@@ -32,11 +32,11 @@ class LeadSelectionResponse(BaseModel):
 # --- 2. CAMPAIGN CREATION ---
 class CreateCampaignRequest(BaseModel):
     name: str
-    platform: str # 'email' or 'instagram'
+    platform: str
     template_id: int
     lead_ids: List[int]
 
-# --- 3. KPI ---
+# --- 3. KPIS ---
 class LeadKPIs(BaseModel):
     total_leads: int
     email_leads: int

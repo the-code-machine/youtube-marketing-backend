@@ -5,24 +5,22 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, or_
 
 # MODELS
-from app.models.campaign import Campaign, CampaignLead
+from app.models.campaign import Campaign, CampaignLead, CampaignEvent, OutreachTemplate
 from app.models.lead import Lead
 from app.models.youtube_channel import YoutubeChannel 
-# ^ Ensure YoutubeChannel is imported to allow the JOIN
 
 class CampaignService:
     def __init__(self, db: Session):
         self.db = db
 
     # ---------------------------------------------------------
-    # 1. LEAD SELECTION (Enriched with Channel Data)
+    # 1. LEAD SELECTION (FIXED WITH JOIN)
     # ---------------------------------------------------------
     def get_leads_selection(self, page: int, limit: int, search: str = None, filter_type: str = None):
         """
-        Fetches Leads joined with YoutubeChannel data for the frontend table.
+        Fetches Leads JOINED with YoutubeChannel to provide rich UI data.
         """
-        # 1. Build Query with JOIN
-        # We select specific columns to avoid over-fetching
+        # 1. Select Columns explicitly to avoid N+1 queries
         query = self.db.query(
             Lead.id,
             Lead.channel_id,
@@ -30,40 +28,42 @@ class CampaignService:
             Lead.instagram_username,
             Lead.status,
             Lead.created_at,
-            # Joined Columns from YoutubeChannel
+            # Joined Columns
             YoutubeChannel.name.label("title"),
             YoutubeChannel.thumbnail_url,
             YoutubeChannel.subscriber_count,
             YoutubeChannel.total_video_count
-        ).join(
+        ).outerjoin(
             YoutubeChannel, 
             Lead.channel_id == YoutubeChannel.channel_id
         )
 
-        # 2. Filters
+        # 2. Apply Filters
         if filter_type == 'email':
             query = query.filter(Lead.primary_email != None)
         elif filter_type == 'instagram':
             query = query.filter(Lead.instagram_username != None)
         
-        # 3. Search (Search by Channel Name or Email)
+        # 3. Apply Search (Check both Name and Email)
         if search:
             query = query.filter(or_(
                 YoutubeChannel.name.ilike(f"%{search}%"),
+                Lead.channel_id.ilike(f"%{search}%"),
                 Lead.primary_email.ilike(f"%{search}%")
             ))
 
-        # 4. Pagination & Execution
+        # 4. Pagination
         total = query.count()
         results = query.order_by(desc(Lead.created_at)).offset((page - 1) * limit).limit(limit).all()
 
-        # 5. Format Data
+        # 5. Map to Schema
         data = []
         for r in results:
             data.append({
                 "id": r.id,
                 "channel_id": r.channel_id,
-                "title": r.name or r.channel_id, # Fallback to ID if name missing
+                # Fallback to channel_id if name is missing
+                "title": r.name or r.channel_id, 
                 "thumbnail_url": r.thumbnail_url,
                 "subscriber_count": r.subscriber_count or 0,
                 "video_count": r.total_video_count or 0,
@@ -89,10 +89,9 @@ class CampaignService:
         }
 
     # ---------------------------------------------------------
-    # 2. CAMPAIGN OPERATIONS
+    # 2. CAMPAIGN MANAGEMENT
     # ---------------------------------------------------------
     def create_campaign(self, name: str, platform: str, template_id: int, lead_ids: list[int]):
-        # Create Campaign Entry
         campaign = Campaign(
             name=name,
             platform=platform,
@@ -103,20 +102,22 @@ class CampaignService:
         self.db.add(campaign)
         self.db.flush()
 
-        # Bulk Create Links
-        # We fetch the template to check AI status once, not in loop
-        # (Assuming template check handled by caller or simple query here)
-        # For efficiency, we default to 'queued' if platform is email generally
-        initial_status = "queued" 
+        # Fetch template to check if AI is needed
+        template = self.db.query(OutreachTemplate).get(template_id)
+        # If template has AI instructions, we queue for generation. Otherwise ready.
+        # (Note: Using getattr to be safe if model changed)
+        has_ai = getattr(template, 'is_ai_powered', False) or getattr(template, 'ai_prompt_instructions', None)
+        initial_status = "queued" if has_ai else "ready_to_send"
 
         new_links = []
         for lid in lead_ids:
-            # Simple deduplication check could happen here if needed
-            new_links.append(CampaignLead(
-                campaign_id=campaign.id,
-                lead_id=lid,
-                status=initial_status
-            ))
+            exists = self.db.query(CampaignLead).filter_by(campaign_id=campaign.id, lead_id=lid).first()
+            if not exists:
+                new_links.append(CampaignLead(
+                    campaign_id=campaign.id,
+                    lead_id=lid,
+                    status=initial_status
+                ))
         
         if new_links:
             self.db.add_all(new_links)
@@ -128,29 +129,33 @@ class CampaignService:
         return {
             "total_campaigns": self.db.query(func.count(Campaign.id)).scalar() or 0,
             "active_campaigns": self.db.query(func.count(Campaign.id)).filter(Campaign.status == 'running').scalar() or 0,
-            # Note: Ensure CampaignLead model has 'sent' status logic working
             "emails_sent": self.db.query(func.count(CampaignLead.id)).filter(CampaignLead.status == 'sent').scalar() or 0,
             "responses": self.db.query(func.count(CampaignLead.id)).filter(CampaignLead.replied_at != None).scalar() or 0
         }
 
+    # ---------------------------------------------------------
+    # 3. EXPORT (Rich Data)
+    # ---------------------------------------------------------
     def export_campaign_leads(self, campaign_id: int):
-        # Detailed Export with Channel Names
+        # Join with YoutubeChannel for names in CSV
         results = self.db.query(
             YoutubeChannel.name,
+            Lead.channel_id,
             Lead.primary_email,
             Lead.instagram_username,
             CampaignLead.status,
             CampaignLead.ai_generated_subject
         ).join(CampaignLead, Lead.id == CampaignLead.lead_id)\
-         .join(YoutubeChannel, Lead.channel_id == YoutubeChannel.channel_id)\
+         .outerjoin(YoutubeChannel, Lead.channel_id == YoutubeChannel.channel_id)\
          .filter(CampaignLead.campaign_id == campaign_id).all()
 
         output = StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Channel Name", "Email", "Instagram", "Status", "Subject Line"])
+        writer.writerow(["Channel Name", "Channel ID", "Email", "Instagram", "Status", "Subject Line"])
         
         for r in results:
-            writer.writerow([r.name, r.primary_email, r.instagram_username, r.status, r.ai_generated_subject])
+            name = r.name or r.channel_id
+            writer.writerow([name, r.channel_id, r.primary_email, r.instagram_username, r.status, r.ai_generated_subject])
             
         output.seek(0)
         return output

@@ -13,7 +13,7 @@ from app.models.campaign import Campaign, CampaignLead
 from app.models.email_template import EmailTemplate
 from app.schemas.campaign import (
     CreateCampaignRequest, 
-    LeadSelectionResponse, # <--- NEW SCHEMA IMPORT
+    LeadSelectionResponse, # <--- Updated Schema
     LeadKPIs, 
     CampaignKPIs
 )
@@ -31,7 +31,7 @@ def get_db():
 # 1. LEAD SELECTION APIs
 # =========================================================
 
-@router.get("/leads", response_model=LeadSelectionResponse) # <--- USE NEW MODEL
+@router.get("/leads", response_model=LeadSelectionResponse)
 def get_leads_table(
     page: int = 1, 
     limit: int = 20, 
