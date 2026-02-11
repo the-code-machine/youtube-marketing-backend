@@ -6,7 +6,11 @@ from .daily_stats import DailyStats
 from .country_stats import CountryStats
 from .category_stats import CategoryStats
 from .lead import Lead
-
+# ... previous imports ...
+from .ai_usage import AIUsageLog
+from .email_message import EmailMessage
+from .automation_job import AutomationJob
+# ...
 __all__ = [
     "YoutubeChannel",
     "YoutubeVideo",
@@ -16,4 +20,7 @@ __all__ = [
     "CountryStats",
     "CategoryStats",
     "Lead"
+    "AIUsageLog",
+    "EmailMessage",
+    "AutomationJob"
 ]
