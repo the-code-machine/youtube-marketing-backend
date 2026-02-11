@@ -12,7 +12,7 @@ from app.workers.campaign.ai_generator import run_ai_generation
 # Models need to be imported so SQLAlchemy knows them
 from app.models.campaign import Campaign, OutreachTemplate
 
-router = APIRouter(prefix="/api", tags=["Campaign Module"])
+router = APIRouter(prefix="/", tags=["Campaign Module"])
 
 def get_db():
     db = SessionLocal()
