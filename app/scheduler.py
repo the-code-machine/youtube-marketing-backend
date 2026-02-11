@@ -1,4 +1,5 @@
 from apscheduler.schedulers.background import BackgroundScheduler
+from app.workers.lead import lead_sync
 from app.workers.youtube.main_worker import run as run_youtube
 from app.workers.campaign.ai_generator import run_ai_generation
 from app.workers.campaign.email_worker import run_email_campaigns
@@ -21,5 +22,7 @@ def start_scheduler():
     # 4. Instagram Automation (Every 30 minutes)
     # Runs slower to be safe
     scheduler.add_job(instagram_automation, "interval", minutes=30, id="ig_bot")
+    
+    scheduler.add_job(lead_sync, "interval", hours=1, id="lead_sync") 
     
     scheduler.start()
