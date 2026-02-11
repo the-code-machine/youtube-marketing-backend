@@ -94,11 +94,10 @@ def create_campaign(
         payload.lead_ids
     )
     
-    # Check if template has AI instructions. If so, trigger AI worker.
-    # Note: We need to fetch the template to be sure
-    template = db.query(EmailTemplate).get(payload.template_id)
-    if template and template.ai_prompt_instructions:
-        background_tasks.add_task(run_ai_generation)
+    # ✅ FIX: Always trigger the worker. 
+    # If the queue is empty, the worker just exits instantly (no harm done).
+    # If leads are queued, it starts processing immediately.
+    background_tasks.add_task(run_ai_generation)
         
     return new_campaign
 

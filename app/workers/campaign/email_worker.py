@@ -66,7 +66,7 @@ def run_email_campaigns():
         for campaign in active_campaigns:
             # Fetch the HTML wrapper from the template
             # Fallback to a simple div if body is missing
-            html_template = campaign.email_template.body or "<div style='font-family: sans-serif;'>{{content}}</div>"
+  
             
             # Find leads that are ready.
             # We look for 'review_ready' (AI done) OR 'ready_to_send' (Manual override)
@@ -76,27 +76,32 @@ def run_email_campaigns():
 ).limit(20).all()
             
             for pl in pending_leads:
-                # A. Get Content
-                # Use AI content if exists, otherwise fallback to template static subject
-                subject = pl.ai_generated_subject or campaign.email_template.subject
-                raw_body_text = pl.ai_generated_body or "Hi there, (Content Missing)"
-                
-                # B. HTML Merge Logic
-                # Convert newlines to <br> for HTML rendering
-                formatted_text = raw_body_text.replace("\n", "<br/>")
-                
-                # Inject text into the HTML container
-                # Supports {{content}} or {{body}} placeholders
-                final_html = html_template.replace("{{content}}", formatted_text).replace("{{body}}", formatted_text)
-                
-                # Basic variable replacement for static parts (e.g. footer)
-                # You can extend this dictionary
-                final_html = final_html.replace("{channel_name}", pl.lead.channel_id)
+                # 1. Validation
+                if not pl.ai_generated_body:
+                    pl.status = "failed"
+                    pl.error_message = "No AI content found"
+                    db.commit()
+                    continue
 
-                # C. Add to Queue
+                # 2. Fetch the HTML Template (The UI Wrapper)
+                # This is where the template comes into the picture!
+                html_wrapper = campaign.email_template.body or "<div>{{content}}</div>"
+                
+                # 3. Merge: HTML + AI Content
+                # Convert newlines to <br> so the text looks good in HTML
+                formatted_ai_text = pl.ai_generated_body.replace("\n", "<br/>")
+                
+                # Replace the placeholder in the template with the AI text
+                final_email_html = html_wrapper.replace("{{content}}", formatted_ai_text)
+                
+                # 4. Send
                 if pl.lead.primary_email:
-                    # We create a tuple of data to pass to the thread
-                    leads_to_process.append((pl.id, subject, final_html, pl.lead.primary_email))
+                    leads_to_process.append((
+                        pl.id, 
+                        pl.ai_generated_subject, 
+                        final_email_html, # Sending the merged result
+                        pl.lead.primary_email
+                    ))
                 else:
                     pl.status = "failed"
                     pl.error_message = "No email address found"

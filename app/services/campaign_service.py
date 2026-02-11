@@ -103,22 +103,20 @@ class CampaignService:
         self.db.add(campaign)
         self.db.flush()
 
-        # Fetch template to check if AI is needed
-        # CORRECT: Pass the class directly
-        template = self.db.query(EmailTemplate).get(template_id)
-        # If template has AI instructions, we queue for generation. Otherwise ready.
-        # (Note: Using getattr to be safe if model changed)
-        has_ai = getattr(template, 'is_ai_powered', False) or getattr(template, 'ai_prompt_instructions', None)
-        initial_status = "queued" if has_ai else "ready_to_send"
+        # FORCE "queued" status. 
+        # We don't care what the template says yet. 
+        # The AI Worker will handle the text generation.
+        initial_status = "queued" 
 
         new_links = []
         for lid in lead_ids:
+            # Check duplicate to avoid crashing
             exists = self.db.query(CampaignLead).filter_by(campaign_id=campaign.id, lead_id=lid).first()
             if not exists:
                 new_links.append(CampaignLead(
                     campaign_id=campaign.id,
                     lead_id=lid,
-                    status=initial_status
+                    status=initial_status # <--- ALWAYS QUEUED
                 ))
         
         if new_links:
@@ -126,7 +124,7 @@ class CampaignService:
         
         self.db.commit()
         return campaign
-
+    
     def get_campaign_kpis(self):
         return {
             "total_campaigns": self.db.query(func.count(Campaign.id)).scalar() or 0,
