@@ -3,33 +3,6 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.core.database import Base
 
-# ---------------------------------------------------------
-# 1. TEMPLATES & AI PROMPTS
-# ---------------------------------------------------------
-class OutreachTemplate(Base):
-    __tablename__ = "outreach_templates"
-
-    id = Column(Integer, primary_key=True, index=True)
-    
-    name = Column(String) # e.g. "Viral Video Compliment (AI)"
-    type = Column(String) # 'email', 'instagram_dm', 'instagram_comment'
-    is_ai_powered = Column(Boolean, default=False)
-    
-    # If Static: This is the email body
-    # If AI: This is the "System Prompt" + "User Prompt" structure
-    subject_template = Column(Text) 
-    body_template = Column(Text) 
-
-    # Stats (Denormalized for speed)
-    usage_count = Column(Integer, default=0)
-    avg_response_rate = Column(Float, default=0.0)
-
-    created_at = Column(TIMESTAMP, default=datetime.utcnow)
-    updated_at = Column(TIMESTAMP, default=datetime.utcnow)
-
-    # Relationships
-    campaigns = relationship("Campaign", back_populates="template")
-
 
 # ---------------------------------------------------------
 # 2. CAMPAIGNS (The Batch)
