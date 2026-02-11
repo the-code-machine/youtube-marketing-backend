@@ -38,7 +38,7 @@ class Campaign(Base):
     updated_at = Column(TIMESTAMP, default=datetime.utcnow)
 
     # Relationships
-    template = relationship("OutreachTemplate", back_populates="campaigns")
+    email_template = relationship("EmailTemplate", back_populates="campaigns")
     leads = relationship("CampaignLead", back_populates="campaign")
 
 
