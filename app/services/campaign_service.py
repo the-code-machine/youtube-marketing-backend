@@ -104,7 +104,8 @@ class CampaignService:
         self.db.flush()
 
         # Fetch template to check if AI is needed
-        template = self.db.query(EmailTemplate()).get(template_id)
+        # CORRECT: Pass the class directly
+        template = self.db.query(EmailTemplate).get(template_id)
         # If template has AI instructions, we queue for generation. Otherwise ready.
         # (Note: Using getattr to be safe if model changed)
         has_ai = getattr(template, 'is_ai_powered', False) or getattr(template, 'ai_prompt_instructions', None)
