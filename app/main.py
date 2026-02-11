@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from app.core.database import Base, engine
 from app.scheduler import start_scheduler, scheduler
 from app.workers.youtube.main_worker import run as youtube_worker_run
-from app.api import ai_store, auth, campaigns, dashboard, segments, templates, youtube, stats, categories
+from app.api import ai_store, auth, campaigns, dashboard, segments, settings, templates, youtube, stats, categories
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import *
@@ -42,8 +42,7 @@ app.include_router((segments.router))
 app.include_router((campaigns.router))
 app.include_router((templates.router))
 app.include_router((ai_store.router))
-
-
+app.include_router((settings.router))
 # -------------------------
 # DB INIT
 # -------------------------
