@@ -30,6 +30,10 @@ def get_db():
 # =========================================================
 # 1. LEAD SELECTION APIs
 # =========================================================
+# Update the get_templates endpoint:
+@router.get("/templates")
+def get_templates(db: Session = Depends(get_db)):
+    return db.query(EmailTemplate).all()
 
 @router.get("/leads", response_model=LeadSelectionResponse)
 def get_leads_table(
@@ -128,3 +132,4 @@ def export_campaign(campaign_id: int, db: Session = Depends(get_db)):
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+    
