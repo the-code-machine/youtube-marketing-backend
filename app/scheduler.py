@@ -1,5 +1,5 @@
 from apscheduler.schedulers.background import BackgroundScheduler
-from app.workers.lead import lead_sync
+from app.workers.lead.lead_sync import sync_channel_to_lead as lead_sync
 from app.workers.youtube.main_worker import run as run_youtube
 from app.workers.campaign.ai_generator import run_ai_generation
 from app.workers.campaign.email_worker import run_email_campaigns
