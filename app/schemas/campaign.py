@@ -4,8 +4,8 @@ from datetime import datetime
 
 # --- 1. RICH LEAD RESPONSE (For Table) ---
 class LeadSelectionItem(BaseModel):
-    id: int               # Lead ID (used for selection)
-    channel_id: str       # YouTube ID
+    id: int
+    channel_id: str
     
     # Rich Data from YoutubeChannel Table
     title: Optional[str] = "Unknown Channel"
@@ -17,8 +17,10 @@ class LeadSelectionItem(BaseModel):
     email: Optional[str] = None
     instagram: Optional[str] = None
     
-    status: str
-    created_at: datetime
+    status: Optional[str] = "new"
+    
+    # ✅ FIX: Make datetime optional to handle old/migrated data
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -32,7 +34,7 @@ class LeadSelectionResponse(BaseModel):
 # --- 2. CAMPAIGN CREATION ---
 class CreateCampaignRequest(BaseModel):
     name: str
-    platform: str
+    platform: str # 'email' or 'instagram'
     template_id: int
     lead_ids: List[int]
 
