@@ -15,7 +15,7 @@ def sync_channel_to_lead(db, channel_id: str):
         email_entry = db.query(ExtractedEmail).filter(ExtractedEmail.channel_id == channel_id).first()
         if email_entry:
             lead.primary_email = email_entry.email
-
+            
     # Update Instagram if lead doesn't have one yet
     if not lead.instagram_username:
         ig_entry = db.query(ChannelSocialLink).filter(
@@ -23,7 +23,6 @@ def sync_channel_to_lead(db, channel_id: str):
             ChannelSocialLink.platform == "instagram"
         ).first()
         if ig_entry:
-            # Strip URL to get username: https://instagram.com/user -> user
             username = ig_entry.url.rstrip('/').split('/')[-1]
             lead.instagram_username = username
 
