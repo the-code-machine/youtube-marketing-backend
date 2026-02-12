@@ -23,7 +23,7 @@ __all__ = [
     "Lead",
     "AIUsageLog",
     "EmailMessage",
-    "AutomationJob"
+    "AutomationJob",
     "Campaign",
     "CampaignLead",
     "CampaignEvent"
