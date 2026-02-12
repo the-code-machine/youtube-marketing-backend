@@ -1,7 +1,7 @@
 import sys
 import os
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
@@ -59,7 +59,10 @@ def run():
 
                 # A. SEARCH (Find new videos/channels)
                 # We pass cat.last_fetched_at to only get content since the last run
-                results = search_videos(API_KEY, cat.youtube_query, cat.last_fetched_at)
+                lookback_time = None
+                if cat.last_fetched_at:
+                    lookback_time = cat.last_fetched_at - timedelta(hours=24)
+                results = search_videos(API_KEY, cat.youtube_query, lookback_time, max_pages=1)
 
                 if not results:
                     print(f"⚠️ No new videos found for {cat.name}.")
