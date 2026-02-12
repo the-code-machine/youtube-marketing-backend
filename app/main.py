@@ -71,7 +71,7 @@ def root():
     return {"status": "running"}
 
 # Manual trigger (admin)
-@app.post("/run/youtube")
+@app.get("/run/youtube")
 def run_youtube_now():
     youtube_worker_run()
     return {"status": "youtube worker started"}
