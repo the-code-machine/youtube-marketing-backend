@@ -19,7 +19,7 @@ app = FastAPI(title="Glossour Backend")
 origins = [
     "http://localhost:3000", # Your Frontend URL
     "http://127.0.0.1:3000",
-    "https://your-production-domain.com"
+    "https://ytstudio.glossour.com"
 ]
 
 app.add_middleware(
