@@ -6,20 +6,23 @@ from datetime import datetime
 class LeadSelectionItem(BaseModel):
     id: int
     channel_id: str
+    video_id: Optional[str] = None
     
-    # Rich Data from YoutubeChannel Table
+    # Channel Details
     title: Optional[str] = "Unknown Channel"
     thumbnail_url: Optional[str] = None
+    channel_url: Optional[str] = None  # New
     subscriber_count: Optional[int] = 0
-    video_count: Optional[int] = 0
     
-    # Contact Info from Lead Table
+    # Video Details (New Section)
+    video_title: Optional[str] = None
+    video_thumbnail: Optional[str] = None
+    video_url: Optional[str] = None
+    
+    # Contact & Status
     email: Optional[str] = None
     instagram: Optional[str] = None
-    
     status: Optional[str] = "new"
-    
-    # ✅ FIX: Make datetime optional to handle old/migrated data
     created_at: Optional[datetime] = None
 
     class Config:

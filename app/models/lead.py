@@ -7,6 +7,7 @@ class Lead(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     channel_id = Column(String)
+    video_id = Column(String, unique=True)
 
     primary_email = Column(Text)
     instagram_username = Column(Text)

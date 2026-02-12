@@ -1,9 +1,14 @@
+import csv
+from io import StringIO
 from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 
 # Services & Workers
+from app.models.lead import Lead
+from app.models.youtube_channel import YoutubeChannel
+from app.models.youtube_video import YoutubeVideo
 from app.services.campaign_service import CampaignService
 from app.workers.campaign.email_worker import run_email_campaigns
 from app.workers.campaign.ai_generator import run_ai_generation
@@ -121,14 +126,35 @@ def start_campaign(campaign_id: int, background_tasks: BackgroundTasks, db: Sess
     return {"status": "running"}
 
 @router.get("/campaigns/{campaign_id}/export")
-def export_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    service = CampaignService(db)
-    csv_file = service.export_campaign_leads(campaign_id)
+def export_campaign_leads(self, campaign_id: int):
+    results = self.db.query(
+        YoutubeChannel.name,
+        YoutubeVideo.title,
+        Lead.channel_id,
+        Lead.video_id,
+        Lead.primary_email,
+        Lead.instagram_username,
+        CampaignLead.status
+    ).join(CampaignLead, Lead.id == CampaignLead.lead_id)\
+     .outerjoin(YoutubeChannel, Lead.channel_id == YoutubeChannel.channel_id)\
+     .outerjoin(YoutubeVideo, Lead.video_id == YoutubeVideo.video_id)\
+     .filter(CampaignLead.campaign_id == campaign_id).all()
+
+    output = StringIO()
+    writer = csv.writer(output)
+    # Added Video Title and URLs to CSV header
+    writer.writerow(["Channel Name", "Video Title", "Channel URL", "Video URL", "Email", "Instagram", "Status"])
     
-    filename = f"campaign_{campaign_id}_export.csv"
-    return StreamingResponse(
-        iter([csv_file.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-    
+    for r in results:
+        writer.writerow([
+            r.name, 
+            r.title, 
+            f"https://youtube.com/channel/{r.channel_id}",
+            f"https://youtube.com/watch?v={r.video_id}",
+            r.primary_email, 
+            r.instagram_username, 
+            r.status
+        ])
+        
+    output.seek(0)
+    return output

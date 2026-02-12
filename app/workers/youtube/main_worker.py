@@ -2,16 +2,13 @@ import sys
 import os
 import traceback
 from datetime import datetime
-
-# Ensure the app module is found
-sys.path.append(os.path.abspath("."))
-
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
 # Core Imports
 from app.core.database import SessionLocal
 from app.models.automation_job import AutomationJob
+from app.models.lead import Lead
 
 # Worker Components
 from app.workers.youtube.youtube_search import search_videos
@@ -22,7 +19,9 @@ from app.workers.youtube.about_scraper import scrape_all_about
 from app.workers.youtube.transformers import transform_all
 from app.workers.youtube.bulk_writer import bulk_write_all
 from app.workers.youtube.stats_writer import write_stats
-from app.workers.youtube.lead_builder import build_leads
+
+# Ensure the app module is found
+sys.path.append(os.path.abspath("."))
 
 load_dotenv()
 
@@ -58,30 +57,23 @@ def run():
             try:
                 print(f"\n--- Processing: {cat.name} ---")
 
-                # ---------------------------------------------------------
                 # A. SEARCH (Find new videos/channels)
-                # ---------------------------------------------------------
-                # Note: We pass cat.last_fetched_at to only get NEW content
+                # We pass cat.last_fetched_at to only get content since the last run
                 results = search_videos(API_KEY, cat.youtube_query, cat.last_fetched_at)
 
                 if not results:
                     print(f"⚠️ No new videos found for {cat.name}.")
-                    # Update timestamp anyway so we don't query "ancient history" next time
                     cat.last_fetched_at = datetime.utcnow()
                     db.commit()
                     continue
 
                 # Extract IDs
-                # We do NOT deduplicate here because we want to UPSERT (update) 
-                # existing channels with fresh stats (Sub count, View count).
                 channel_ids = list(set([r["channel_id"] for r in results]))
                 video_ids = list(set([r["video_id"] for r in results]))
 
                 print(f"🔎 Found {len(video_ids)} videos from {len(channel_ids)} channels.")
 
-                # ---------------------------------------------------------
-                # B. FETCH DETAILS (API)
-                # ---------------------------------------------------------
+                # B. FETCH DETAILS (YouTube API)
                 channels_raw = fetch_channels(API_KEY, channel_ids)
                 videos_raw = fetch_videos(API_KEY, video_ids)
 
@@ -89,40 +81,67 @@ def run():
                     print("❌ Failed to fetch channel details. Skipping batch.")
                     continue
 
-                # ---------------------------------------------------------
-                # C. SCRAPE ABOUT PAGES (The 'Secret Sauce')
-                # ---------------------------------------------------------
+                # C. SCRAPE ABOUT PAGES
                 print("🕷️ Scraping About pages (this may take a moment)...")
                 about_data = scrape_all_about(channel_ids)
 
-                # ---------------------------------------------------------
                 # D. TRANSFORM & ENRICH
-                # ---------------------------------------------------------
-                # This calculates Engagement Rates & formats data for DB
-                payload = transform_all(channels_raw, videos_raw, about_data,category_id=cat.id)
+                # This prepares the data for bulk insertion and identifies social links
+                payload = transform_all(channels_raw, videos_raw, about_data, category_id=cat.id)
 
-                # ---------------------------------------------------------
                 # E. BULK WRITE (UPSERT)
-                # ---------------------------------------------------------
                 # Saves Channels, Videos, Emails, Socials, and Metrics
                 bulk_write_all(db, payload)
 
-                # ---------------------------------------------------------
-                # F. UPDATE STATS & BUILD LEADS
-                # ---------------------------------------------------------
+                # F. UPDATE DAILY/CATEGORY STATS
                 write_stats(db, payload, cat.name)
-                build_leads(db)
+                
+                # ---------------------------------------------------------
+                # G. INTEGRATED LEAD GENERATION (Video-Based)
+                # ---------------------------------------------------------
+                print(f"🎯 Evaluating leads for {len(payload['videos'])} new videos...")
 
-                # ---------------------------------------------------------
-                # G. UPDATE CATEGORY CURSOR
-                # ---------------------------------------------------------
+                for video_obj in payload["videos"]:
+                    # 1. Check if lead already exists for this specific VIDEO_ID
+                    exists = db.query(Lead).filter(Lead.video_id == video_obj.video_id).first()
+                    if exists:
+                        continue
+
+                    # 2. Match video to channel data to extract contact info
+                    channel_id = video_obj.channel_id
+                    channel_data = next((c for c in payload["channels"] if c.channel_id == channel_id), None)
+
+                    if channel_data:
+                        email = channel_data.primary_email
+                        ig_url = channel_data.primary_instagram
+        
+                        # 3. GATEKEEPER: Only create lead if we have at least one contact method
+                        if email or ig_url:
+                            # Extract clean username from IG URL
+                            ig_username = None
+                            if ig_url:
+                                ig_username = ig_url.rstrip('/').split('/')[-1]
+
+                            new_lead = Lead(
+                                channel_id=channel_id,
+                                video_id=video_obj.video_id,
+                                primary_email=email,
+                                instagram_username=ig_username,
+                                status="new",
+                                notes=f"Video Title: {video_obj.title}\n\nDescription: {video_obj.description[:500]}",
+                                created_at=datetime.utcnow(),
+                                updated_at=datetime.utcnow()
+                            )
+                            db.add(new_lead)
+                            print(f"✅ Lead Created: {channel_data.name} (Video: {video_obj.video_id})")
+
+                # H. UPDATE CATEGORY CURSOR (Save progress)
                 cat.last_fetched_at = datetime.utcnow()
                 db.commit()
 
                 print(f"✅ Completed: {cat.name}")
 
             except Exception as e:
-                # Catch Category-level errors so the whole job doesn't die
                 db.rollback()
                 print(f"❌ Error processing category '{cat.name}': {str(e)}")
                 traceback.print_exc()
@@ -137,9 +156,6 @@ def run():
         print("🎉 Worker finished successfully.")
 
     except Exception as e:
-        # ---------------------------------------------------------
-        # CRITICAL FAILURE
-        # ---------------------------------------------------------
         print(f"🔥 CRITICAL WORKER FAILURE: {str(e)}")
         if job:
             job.status = "failed"

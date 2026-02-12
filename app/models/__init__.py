@@ -10,6 +10,7 @@ from .lead import Lead
 from .ai_usage import AIUsageLog
 from .email_message import EmailMessage
 from .automation_job import AutomationJob
+from .campaign import Campaign, CampaignLead, CampaignEvent
 # ...
 __all__ = [
     "YoutubeChannel",
@@ -23,4 +24,7 @@ __all__ = [
     "AIUsageLog",
     "EmailMessage",
     "AutomationJob"
+    "Campaign",
+    "CampaignLead",
+    "CampaignEvent"
 ]

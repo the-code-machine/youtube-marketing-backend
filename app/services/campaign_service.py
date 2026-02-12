@@ -8,7 +8,8 @@ from sqlalchemy import func, desc, or_
 from app.models.campaign import Campaign, CampaignLead, CampaignEvent
 from app.models.email_template import EmailTemplate
 from app.models.lead import Lead
-from app.models.youtube_channel import YoutubeChannel 
+from app.models.youtube_channel import YoutubeChannel
+from app.models.youtube_video import YoutubeVideo 
 
 class CampaignService:
     def __init__(self, db: Session):
@@ -18,69 +19,69 @@ class CampaignService:
     # 1. LEAD SELECTION (FIXED WITH JOIN)
     # ---------------------------------------------------------
     def get_leads_selection(self, page: int, limit: int, search: str = None, filter_type: str = None):
-        """
-        Fetches Leads JOINED with YoutubeChannel to provide rich UI data.
-        """
-        # 1. Select Columns explicitly to avoid N+1 queries
+    # 1. Triple Join Query
         query = self.db.query(
-            Lead.id,
-            Lead.channel_id,
-            Lead.primary_email,
-            Lead.instagram_username,
-            Lead.status,
-            Lead.created_at,
-            # Joined Columns
-            YoutubeChannel.name,
-            YoutubeChannel.thumbnail_url,
-            YoutubeChannel.subscriber_count,
-            YoutubeChannel.total_video_count
-        ).outerjoin(
-            YoutubeChannel, 
-            Lead.channel_id == YoutubeChannel.channel_id
-        )
+        Lead.id,
+        Lead.channel_id,
+        Lead.video_id,
+        Lead.primary_email,
+        Lead.instagram_username,
+        Lead.status,
+        Lead.created_at,
+        # Channel Columns
+        YoutubeChannel.name.label("channel_name"),
+        YoutubeChannel.thumbnail_url.label("channel_thumb"),
+        YoutubeChannel.subscriber_count,
+        # Video Columns (Joined via Lead.video_id)
+        YoutubeVideo.title.label("video_title"),
+        YoutubeVideo.thumbnail_url.label("video_thumb")
+    ).outerjoin(
+        YoutubeChannel, Lead.channel_id == YoutubeChannel.channel_id
+    ).outerjoin(
+        YoutubeVideo, Lead.video_id == YoutubeVideo.video_id
+    )
 
-        # 2. Apply Filters
+    # 2. Filters
         if filter_type == 'email':
             query = query.filter(Lead.primary_email != None)
         elif filter_type == 'instagram':
             query = query.filter(Lead.instagram_username != None)
-        
-        # 3. Apply Search (Check both Name and Email)
+    
         if search:
             query = query.filter(or_(
-                YoutubeChannel.name.ilike(f"%{search}%"),
-                Lead.channel_id.ilike(f"%{search}%"),
-                Lead.primary_email.ilike(f"%{search}%")
-            ))
+            YoutubeChannel.name.ilike(f"%{search}%"),
+            YoutubeVideo.title.ilike(f"%{search}%"),
+            Lead.primary_email.ilike(f"%{search}%")
+        ))
 
-        # 4. Pagination
         total = query.count()
         results = query.order_by(desc(Lead.created_at)).offset((page - 1) * limit).limit(limit).all()
 
-        # 5. Map to Schema
+         # 3. Data Mapping with URL Construction
         data = []
         for r in results:
             data.append({
-                "id": r.id,
-                "channel_id": r.channel_id,
-                # Fallback to channel_id if name is missing
-                "title": r.name or r.channel_id, 
-                "thumbnail_url": r.thumbnail_url,
-                "subscriber_count": r.subscriber_count or 0,
-                "video_count": r.total_video_count or 0,
-                "email": r.primary_email,
-                "instagram": r.instagram_username,
-                "status": r.status,
-                "created_at": r.created_at
-            })
+            "id": r.id,
+            "channel_id": r.channel_id,
+            "video_id": r.video_id,
+            "title": r.channel_name or "Unknown",
+            "thumbnail_url": r.channel_thumb,
+            "channel_url": f"https://www.youtube.com/channel/{r.channel_id}",
+            "subscriber_count": r.subscriber_count or 0,
+            
+            # Video Details
+            "video_title": r.video_title,
+            "video_thumbnail": r.video_thumb,
+            "video_url": f"https://www.youtube.com/watch?v={r.video_id}" if r.video_id else None,
+            
+            "email": r.primary_email,
+            "instagram": r.instagram_username,
+            "status": r.status,
+            "created_at": r.created_at
+        })
 
-        return {
-            "data": data,
-            "total": total,
-            "page": page,
-            "limit": limit
-        }
-
+        return {"data": data, "total": total, "page": page, "limit": limit}
+    
     def get_lead_kpis(self):
         return {
             "total_leads": self.db.query(func.count(Lead.id)).scalar() or 0,
