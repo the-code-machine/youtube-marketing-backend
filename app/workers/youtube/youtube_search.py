@@ -65,7 +65,7 @@ def search_videos(api_key, backup_key, query, published_after=None, max_pages=1)
             # If we successfully got data, return immediately
             if results or resp.status_code == 200:
                 print(f"✅ Success with Key {index + 1}. Found {len(results)} videos.")
-                return results
+                return results ,active_key
 
         except Exception as e:
             print(f"❌ Request Exception with Key {index + 1}: {str(e)}")

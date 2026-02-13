@@ -1,5 +1,6 @@
 import sys
 import os
+from tkinter import W
 import traceback
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -62,9 +63,9 @@ def run():
                 lookback_time = None
                 if cat.last_fetched_at:
                     lookback_time = cat.last_fetched_at - timedelta(hours=24)
-                results = search_videos(API_KEY,BACKUP_KEY, cat.youtube_query, lookback_time, max_pages=1)
+                results, working_key = search_videos(API_KEY,BACKUP_KEY, cat.youtube_query, lookback_time, max_pages=1)
 
-                if not results:
+                if not results or not working_key:
                     print(f"⚠️ No new videos found for {cat.name}.")
                     cat.last_fetched_at = datetime.utcnow()
                     db.commit()
@@ -77,8 +78,8 @@ def run():
                 print(f"🔎 Found {len(video_ids)} videos from {len(channel_ids)} channels.")
 
                 # B. FETCH DETAILS (YouTube API)
-                channels_raw = fetch_channels(API_KEY, channel_ids)
-                videos_raw = fetch_videos(API_KEY, video_ids)
+                channels_raw = fetch_channels(working_key, channel_ids)
+                videos_raw = fetch_videos(working_key, video_ids)
 
                 if not channels_raw:
                     print("❌ Failed to fetch channel details. Skipping batch.")
