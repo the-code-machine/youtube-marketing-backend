@@ -1,6 +1,5 @@
 import sys
 import os
-from tkinter import W
 import traceback
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
