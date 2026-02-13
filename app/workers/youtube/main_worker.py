@@ -26,7 +26,7 @@ sys.path.append(os.path.abspath("."))
 load_dotenv()
 
 API_KEY = os.getenv("YOUTUBE_API_KEY")
-
+BACKUP_KEY = os.getenv("EMERGENCY_BACKUP_KEY")
 def run():
     db: Session = SessionLocal()
     job = None
@@ -62,7 +62,7 @@ def run():
                 lookback_time = None
                 if cat.last_fetched_at:
                     lookback_time = cat.last_fetched_at - timedelta(hours=24)
-                results = search_videos(API_KEY, cat.youtube_query, lookback_time, max_pages=1)
+                results = search_videos(API_KEY,BACKUP_KEY, cat.youtube_query, lookback_time, max_pages=1)
 
                 if not results:
                     print(f"⚠️ No new videos found for {cat.name}.")
