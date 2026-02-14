@@ -59,16 +59,12 @@ def run():
 
                 # A. SEARCH (Find new videos/channels)
                 # We pass cat.last_fetched_at to only get content since the last run
-                lookback_time = None
+                
+        
+        
                 if cat.last_fetched_at:
-                    lookback_time = cat.last_fetched_at - timedelta(hours=24)
-                results, working_key = search_videos(API_KEY,BACKUP_KEY, cat.youtube_query, lookback_time, max_pages=1)
-
-                if not results or not working_key:
-                    print(f"⚠️ No new videos found for {cat.name}.")
-                    cat.last_fetched_at = datetime.utcnow()
-                    db.commit()
-                    continue
+                    lookback = datetime.utcnow() - timedelta(hours=48)
+                results, working_key = search_videos(API_KEY, BACKUP_KEY, cat.youtube_query, published_after=lookback, target_count=250)
 
                 # Extract IDs
                 channel_ids = list(set([r["channel_id"] for r in results]))
@@ -77,8 +73,8 @@ def run():
                 print(f"🔎 Found {len(video_ids)} videos from {len(channel_ids)} channels.")
 
                 # B. FETCH DETAILS (YouTube API)
-                channels_raw = fetch_channels(working_key, channel_ids)
-                videos_raw = fetch_videos(working_key, video_ids)
+                channels_raw = fetch_channels(BACKUP_KEY, channel_ids)
+                videos_raw = fetch_videos(BACKUP_KEY, video_ids)
 
                 if not channels_raw:
                     print("❌ Failed to fetch channel details. Skipping batch.")
