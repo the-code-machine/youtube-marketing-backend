@@ -61,7 +61,7 @@ ABOUT_SCRAPE_THREADS = 25
 
 # Max raw results per search job before we stop paginating
 # 500 = YouTube's hard cap (10 pages × 50 results)
-RESULTS_PER_JOB = 250
+RESULTS_PER_JOB = 100
 
 # Lookback windows
 LOOKBACK_FIRST_RUN_DAYS = 7        # If category never ran before

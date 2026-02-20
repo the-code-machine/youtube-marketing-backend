@@ -24,7 +24,7 @@ def start_scheduler():
     scheduler.add_job(
         run_youtube, 
         "interval", 
-        hours=6, 
+        hours=8, 
         id="youtube_discovery",
         max_instances=1,
         replace_existing=True
