@@ -168,7 +168,7 @@ def scrape_about(channel_id, videos_raw=None):
                 email = cleaned
                 break
 
-        time.sleep(0.8)
+        time.sleep(0.2)
 
         return list(links), email
 
@@ -182,7 +182,7 @@ def scrape_all_about(channel_ids):
 
     results = {}
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=25) as executor:
 
         futures = {
             executor.submit(scrape_about, cid): cid
