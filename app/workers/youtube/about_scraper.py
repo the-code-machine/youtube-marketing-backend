@@ -182,7 +182,7 @@ def scrape_all_about(channel_ids):
 
     results = {}
 
-    with ThreadPoolExecutor(max_workers=25) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
 
         futures = {
             executor.submit(scrape_about, cid): cid
