@@ -138,7 +138,11 @@ def run_email_campaigns():
                     lead_record.campaign.sent_count += 1
                     logger.info(f"✅ Sent to Lead {lead_id}")
                 else:
-                    lead_record.status = "failed"
+                      
+                    if error and "RECIPIENT_NOT_FOUND" in str(error):
+                        lead_record.status = "invalid_email"
+                    else:
+                        lead_record.status = "failed"
                     lead_record.error_message = error
                     db.add(CampaignEvent(
                         campaign_lead_id=lead_id,

@@ -1,5 +1,5 @@
 import re
-
+from app.workers.youtube.email_validator import is_valid_email
 EMAIL = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 
 SOCIALS = {
@@ -13,7 +13,9 @@ SOCIALS = {
 URL = r"(https?:\/\/[^\s]+)"
 
 def extract_emails(text):
-    return list(set(re.findall(EMAIL, text or "")))
+    raw = list(set(re.findall(EMAIL, text or "")))
+    return [e.lower() for e in raw if is_valid_email(e)]
+
 
 def extract_socials(text):
 

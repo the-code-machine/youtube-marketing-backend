@@ -4,7 +4,8 @@ import json
 import time
 from urllib.parse import urlparse, parse_qs, unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+# REMOVE the old clean_email function entirely, replace import:
+from app.workers.youtube.email_validator import clean_email
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
@@ -107,22 +108,6 @@ def _extract_yt_initial_data(html):
         return None
 
 
-# ---------------- EMAIL CLEANER ----------------
-
-def clean_email(raw):
-
-    domain = raw.split("@")[-1]
-
-    if "." not in domain:
-        return None
-
-    if len(domain) < 4:
-        return None
-
-    if domain.endswith((".png", ".jpg", ".webp")):
-        return None
-
-    return raw.lower()
 
 
 # ---------------- MAIN SCRAPER ----------------
