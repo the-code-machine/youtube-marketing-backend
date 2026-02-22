@@ -7,18 +7,20 @@ class LeadSelectionItem(BaseModel):
     id: int
     channel_id: str
     video_id: Optional[str] = None
-    
+
     # Channel Details
     title: Optional[str] = "Unknown Channel"
     thumbnail_url: Optional[str] = None
-    channel_url: Optional[str] = None  # New
+    channel_url: Optional[str] = None
     subscriber_count: Optional[int] = 0
-    
-    # Video Details (New Section)
+    country_code: Optional[str] = None          # ← ADDED — was being stripped by Pydantic
+
+    # Video Details
     video_title: Optional[str] = None
     video_thumbnail: Optional[str] = None
     video_url: Optional[str] = None
-    
+    duration_seconds: Optional[int] = None      # ← ADDED — was causing blank duration field
+
     # Contact & Status
     email: Optional[str] = None
     instagram: Optional[str] = None
@@ -37,7 +39,7 @@ class LeadSelectionResponse(BaseModel):
 # --- 2. CAMPAIGN CREATION ---
 class CreateCampaignRequest(BaseModel):
     name: str
-    platform: str # 'email' or 'instagram'
+    platform: str  # 'email' or 'instagram'
     template_id: int
     lead_ids: List[int]
 
