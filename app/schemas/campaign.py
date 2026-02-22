@@ -42,6 +42,8 @@ class CreateCampaignRequest(BaseModel):
     platform: str  # 'email' or 'instagram'
     template_id: int
     lead_ids: List[int]
+    generation_mode: Optional[str] = "generalised"   # ← ADD
+    script_plan_id:  Optional[int] = None  
 
 # --- 3. KPIS ---
 class LeadKPIs(BaseModel):

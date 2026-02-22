@@ -155,6 +155,8 @@ def create_campaign(
         platform=request.platform,
         template_id=request.template_id,
         lead_ids=request.lead_ids,
+        generation_mode=request.generation_mode,
+        script_plan_id=request.script_plan_id,
     )
     background_tasks.add_task(run_ai_generation)
     return campaign  # ORM object serialized by FastAPI → res.data.id works

@@ -152,13 +152,14 @@ class CampaignService:
     # ---------------------------------------------------------
     # 2. CAMPAIGN MANAGEMENT
     # ---------------------------------------------------------
-    def create_campaign(self, name: str, platform: str, template_id: int, lead_ids: list[int]):
+    def create_campaign(self, name: str, platform: str, template_id: int, lead_ids: list[int],generation_mode="generalised", script_plan_id=None):
         campaign = Campaign(
             name=name,
             platform=platform,
             template_id=template_id,
             status="draft",
             total_leads=len(lead_ids),
+            generation_mode=generation_mode, script_plan_id=script_plan_id
         )
         self.db.add(campaign)
         self.db.flush()

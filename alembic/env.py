@@ -58,6 +58,7 @@ from app.models.template_usage import TemplateUsage
 from app.models.target_category import TargetCategory
 # --- ADD THESE NEW IMPORTS ---
 from app.models.campaign import Campaign, CampaignLead, CampaignEvent
+from app.models.script_plan_model import ScriptPlan
 target_metadata = Base.metadata
 
 

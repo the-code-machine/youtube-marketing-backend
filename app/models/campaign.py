@@ -33,6 +33,8 @@ class Campaign(Base):
     sent_count = Column(Integer, default=0)
     opened_count = Column(Integer, default=0)
     replied_count = Column(Integer, default=0)
+    generation_mode = Column(String, default="generalised")  # 'generalised' | 'script_plan'
+    script_plan_id  = Column(Integer, ForeignKey("script_plans.id"), nullable=True)
     
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
     updated_at = Column(TIMESTAMP, default=datetime.utcnow)
