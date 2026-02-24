@@ -17,6 +17,9 @@ RECIPIENT_NOT_FOUND_ERRORS = [
     "mailbox unavailable",
 ]
 
+# ZeptoMail success codes — EM_104 = "Email request received" (queued successfully)
+ZEPTO_SUCCESS_CODES = {"EM_104"}
+
 
 class EmailService:
     def __init__(self):
@@ -40,17 +43,26 @@ class EmailService:
             }
 
             response = requests.post(self.api_url, data=payload, headers=headers)
-
-            # ZeptoMail returns error details in JSON body even on failure
             response_data = response.json()
 
-            if response.status_code == 200:
+            # ✅ ZeptoMail success: 2xx status OR body message is "OK" with known success code
+            is_http_success = response.ok  # covers 200, 201, 202, etc.
+            zepto_code = None
+            if isinstance(response_data.get("data"), list) and response_data["data"]:
+                zepto_code = response_data["data"][0].get("code")
+
+            is_zepto_success = (
+                response_data.get("message", "").upper() == "OK"
+                and zepto_code in ZEPTO_SUCCESS_CODES
+            )
+
+            if is_http_success or is_zepto_success:
+                logger.info(f"✅ Email queued successfully for {to_email} [code={zepto_code}]")
                 return True, None
 
-            # Parse ZeptoMail error response
+            # --- Failure handling below ---
             error_message = str(response_data).lower()
 
-            # Check if it's a recipient-not-found type error
             if any(err in error_message for err in RECIPIENT_NOT_FOUND_ERRORS) or response.status_code in (422, 400):
                 logger.warning(f"📭 Recipient not found / rejected: {to_email} — {response_data}")
                 return False, f"RECIPIENT_NOT_FOUND: {response_data}"
