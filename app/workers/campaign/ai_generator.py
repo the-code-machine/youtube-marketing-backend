@@ -1,7 +1,7 @@
 import time
 from datetime import datetime
 from sqlalchemy.orm import Session
-
+from sqlalchemy import func
 from app.core.database import SessionLocal
 from app.models.campaign import Campaign, CampaignLead
 from app.models.script_plan_model import ScriptPlan
@@ -379,6 +379,19 @@ def run_ai_generation():
                 item.campaign.generated_count = (item.campaign.generated_count or 0) + 1
 
                 db.commit()
+
+                # ── Auto-start campaign when all leads are AI-ready ────────────
+                if campaign.status == "draft":
+                    remaining_queued = db.query(func.count(CampaignLead.id)).filter(
+                        CampaignLead.campaign_id == campaign.id,
+                        CampaignLead.status == "queued"
+                    ).scalar()
+
+                    if remaining_queued == 0:
+                        campaign.status = "running"
+                        db.commit()
+                        print(f"🚀 Campaign {campaign.id} '{campaign.name}' auto-started — all leads AI-ready!")
+
                 time.sleep(0.5)
 
             except Exception as e:
