@@ -24,7 +24,7 @@ class Settings:
     ZEPTO_TO_ADDRESS = os.getenv("ZEPTO_TO_ADDRESS")        
     
     # LIMITS
-    DAILY_EMAIL_LIMIT = 100
+    DAILY_EMAIL_LIMIT = 1000
     DAILY_IG_LIMIT = 200
 
 settings = Settings()
