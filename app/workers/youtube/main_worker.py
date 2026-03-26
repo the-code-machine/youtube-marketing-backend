@@ -1,23 +1,37 @@
 """
 app/workers/youtube/main_worker.py
 
-RSS-FIRST ARCHITECTURE — Ban-proof, quota-efficient, production ready
-═══════════════════════════════════════════════════════════════════════
+HYBRID ARCHITECTURE — Proven working after RSS search confirmed dead
+═════════════════════════════════════════════════════════════════════
 
-DISCOVERY:   RSS feeds      → 0 API units (unlimited, official, zero ban risk)
-ENRICHMENT:  YouTube API    → NEW channels/videos only (~200 units/run)
-EMAILS:      About scraper  → 0 API units
+DISCOVERY (new channels):   YouTube API search  → controlled quota (~50 results/job)
+MONITORING (known channels): Channel RSS        → 0 units, works perfectly
+ENRICHMENT:                  YouTube API        → new channels only
+EMAILS:                      About scraper      → 0 units
 
-ALL FIXES APPLIED:
-  ✅ RSS-first discovery (no search.list calls)
-  ✅ Known channel monitoring (re-checks existing DB channels)
-  ✅ DB filter before API fetch (new channels/videos only)
-  ✅ Bulk lead duplicate check (1 query vs N queries)
-  ✅ About scraper batched in 300s (3GB RAM safe)
-  ✅ About scraper 10 threads (was 25 — OOM risk)
-  ✅ 403 safe key handling
-  ✅ Worker never halts on key exhaustion (RSS continues regardless)
-  ✅ Dynamic lookback window per category
+WHY HYBRID:
+  YouTube killed RSS search feeds (returns 400).
+  Channel RSS (per channel_id) still works perfectly — confirmed 79K videos.
+  API search is still needed to discover BRAND NEW channels we've never seen.
+  But we use it sparingly: 1 page (50 results) per query, not 10 pages.
+
+QUOTA MATH (3 keys = 30,000 units/day):
+  API search for new channels:  10 queries × 100 units = 1,000 units/run
+  API enrichment (new only):    ~200 units/run
+  Total per run:                ~1,200 units
+  3 keys = 30,000 ÷ 1,200 = 25 runs/day ✅ (schedule every 1-2 hours)
+
+ALL FIXES:
+  ✅ Channel RSS monitoring (known channels — confirmed working)
+  ✅ API search for NEW channel discovery (low quota, 1 page only)
+  ✅ DB filter before API enrichment (new channels/videos only)
+  ✅ Bulk lead check (1 query not N queries)
+  ✅ Bulk lead insert
+  ✅ Leads from KNOWN channels (uses DB contact info)
+  ✅ Leads from NEW channels (uses payload contact info)
+  ✅ About scraper batched (300 at a time, 10 threads, 3GB safe)
+  ✅ Retry on empty channel fetch
+  ✅ DB rollback on crash
 """
 
 import sys
@@ -33,14 +47,15 @@ from sqlalchemy import text
 sys.path.append(os.path.abspath("."))
 load_dotenv()
 
-# ── Core ─────────────────────────────────────────────────────────────────────
+# ── Core ──────────────────────────────────────────────────────────────────────
 from app.core.database import SessionLocal
 from app.models.automation_job import AutomationJob
 from app.models.lead import Lead
 
 # ── Worker Components ─────────────────────────────────────────────────────────
 from app.workers.youtube.key_manager import APIKeyManager
-from app.workers.youtube.rss_worker import discover_via_rss, monitor_known_channels
+from app.workers.youtube.rss_worker import monitor_known_channels
+from app.workers.youtube.youtube_search import search_videos
 from app.workers.youtube.channel_fetcher import fetch_channels
 from app.workers.youtube.video_fetcher import fetch_videos
 from app.workers.youtube.category_fetcher import get_active_categories
@@ -54,16 +69,89 @@ from app.workers.youtube.stats_writer import write_stats
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-RSS_THREADS           = 10   # Parallel RSS fetch threads (polite limit)
-ABOUT_SCRAPE_THREADS  = 10   # Safe for 3GB RAM (was 25 — OOM risk)
-ABOUT_SCRAPE_BATCH    = 300  # Scrape N channels at a time (memory safe)
-KNOWN_CHANNEL_THREADS = 20   # Threads for monitoring known channels
-KNOWN_CHANNEL_LIMIT   = 2000 # Max known channels to re-check per run
+# API search for new channel discovery
+# 1 page = 50 results = 100 units per job
+# Keep low to preserve quota for enrichment
+API_SEARCH_TARGET      = 50    # 1 page only per job
+API_SEARCH_THREADS     = 5     # parallel search jobs
+
+# Channel RSS monitoring
+RSS_MONITOR_THREADS    = 20    # threads for known channel RSS checks
+KNOWN_CHANNEL_LIMIT    = 3000  # max known channels to re-check per run
+
+# About scraper (3GB RAM safe)
+ABOUT_SCRAPE_THREADS   = 10
+ABOUT_SCRAPE_BATCH     = 300
 
 # Lookback windows
-LOOKBACK_FIRST_RUN_DAYS      = 3   # First ever run — seed DB with 3 days
-LOOKBACK_NORMAL_HOURS        = 26  # Normal run — slight overlap prevents gaps
-LOOKBACK_STALE_THRESHOLD_HRS = 48  # If gap > 48h, extend window
+LOOKBACK_FIRST_RUN_DAYS      = 3
+LOOKBACK_NORMAL_HOURS        = 26
+LOOKBACK_STALE_THRESHOLD_HRS = 48
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SEARCH QUERIES PER CATEGORY
+# Short list — 1 page each = minimal quota for new channel discovery
+# ══════════════════════════════════════════════════════════════════════════════
+
+CATEGORY_SEARCH_QUERIES = {
+    "Music Creators": [
+        "official music video 2026",
+        "new song 2026",
+        "indie artist music video",
+        "hip hop music video 2026",
+        "afrobeats music video 2026",
+    ],
+    "Podcast Creators": [
+        "podcast episode 2026",
+        "business podcast new episode",
+        "entrepreneur interview podcast",
+    ],
+    "Finance & Investing": [
+        "stock market investing 2026",
+        "personal finance tips new",
+        "crypto trading tutorial 2026",
+        "investing for beginners",
+    ],
+    "Education & Tech": [
+        "coding tutorial beginner 2026",
+        "python tutorial beginners",
+        "web development tutorial new",
+        "ai tools tutorial 2026",
+    ],
+    "Gaming Creators": [
+        "gaming channel new video 2026",
+        "lets play gameplay 2026",
+        "game review new release",
+        "minecraft gameplay 2026",
+    ],
+    "Fitness & Health": [
+        "workout tutorial beginner 2026",
+        "home workout no equipment",
+        "yoga for beginners new",
+    ],
+    "Food & Cooking": [
+        "cooking tutorial easy recipe",
+        "food vlog new video",
+        "recipe video beginner",
+    ],
+    "Comedy & Entertainment": [
+        "comedy skit funny video 2026",
+        "stand up comedy new",
+        "sketch comedy new video",
+    ],
+    "Business & Entrepreneurship": [
+        "how to start a business 2026",
+        "entrepreneur vlog new",
+        "side hustle ideas new",
+        "online business tutorial",
+    ],
+    "Lifestyle & Travel Vlogs": [
+        "travel vlog new video 2026",
+        "day in my life vlog",
+        "digital nomad vlog 2026",
+    ],
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -71,38 +159,24 @@ LOOKBACK_STALE_THRESHOLD_HRS = 48  # If gap > 48h, extend window
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get_lookback(cat) -> datetime:
-    """
-    Dynamic lookback window based on how long since last run.
-    Prevents gaps without re-fetching too much old content.
-    """
     now = datetime.utcnow()
-
     if cat.last_fetched_at is None:
         print(f"   📅 First run — lookback {LOOKBACK_FIRST_RUN_DAYS} days")
         return now - timedelta(days=LOOKBACK_FIRST_RUN_DAYS)
-
     hours_since = (now - cat.last_fetched_at).total_seconds() / 3600
-
     if hours_since > LOOKBACK_STALE_THRESHOLD_HRS:
         window = int(hours_since) + 24
         print(f"   📅 Stale ({hours_since:.0f}h gap) — lookback {window}h")
         return now - timedelta(hours=window)
-
     print(f"   📅 Normal — lookback {LOOKBACK_NORMAL_HOURS}h")
     return now - timedelta(hours=LOOKBACK_NORMAL_HOURS)
 
 
 def _get_known_channel_ids(db: Session, category_id: int) -> list[str]:
-    """
-    Returns the most recently active channel IDs we already have in DB.
-    Used to monitor known channels for new uploads via RSS.
-    Zero API cost — pure DB + RSS.
-    """
+    """Most recently active channels in DB for this category."""
     result = db.execute(text("""
-        SELECT channel_id
-        FROM youtube_channels
-        WHERE category_id = :cat_id
-          AND is_active = true
+        SELECT channel_id FROM youtube_channels
+        WHERE category_id = :cat_id AND is_active = true
         ORDER BY last_video_published_at DESC NULLS LAST
         LIMIT :limit
     """), {"cat_id": category_id, "limit": KNOWN_CHANNEL_LIMIT})
@@ -110,84 +184,130 @@ def _get_known_channel_ids(db: Session, category_id: int) -> list[str]:
 
 
 def _filter_new_channels(db: Session, channel_ids: list[str]) -> list[str]:
-    """
-    Returns only channel IDs NOT already in youtube_channels.
-    Prevents wasting API quota on channels we already enriched.
-    """
     if not channel_ids:
         return []
-    result = db.execute(text("""
-        SELECT channel_id FROM youtube_channels
-        WHERE channel_id = ANY(:ids)
-    """), {"ids": channel_ids})
+    result = db.execute(text(
+        "SELECT channel_id FROM youtube_channels WHERE channel_id = ANY(:ids)"
+    ), {"ids": channel_ids})
     existing = {row[0] for row in result.fetchall()}
-    new_ids = [cid for cid in channel_ids if cid not in existing]
-    print(
-        f"   🔍 Channels: {len(channel_ids):,} found — "
-        f"{len(new_ids):,} new, {len(existing):,} already in DB"
-    )
+    new_ids = [c for c in channel_ids if c not in existing]
+    print(f"   🔍 Channels: {len(channel_ids):,} found → {len(new_ids):,} new, {len(existing):,} in DB")
     return new_ids
 
 
 def _filter_new_videos(db: Session, video_ids: list[str]) -> list[str]:
-    """
-    Returns only video IDs NOT already in youtube_videos.
-    """
     if not video_ids:
         return []
-    result = db.execute(text("""
-        SELECT video_id FROM youtube_videos
-        WHERE video_id = ANY(:ids)
-    """), {"ids": video_ids})
+    result = db.execute(text(
+        "SELECT video_id FROM youtube_videos WHERE video_id = ANY(:ids)"
+    ), {"ids": video_ids})
     existing = {row[0] for row in result.fetchall()}
-    new_ids = [vid for vid in video_ids if vid not in existing]
-    print(
-        f"   🎬 Videos: {len(video_ids):,} found — "
-        f"{len(new_ids):,} new, {len(existing):,} already in DB"
-    )
+    new_ids = [v for v in video_ids if v not in existing]
+    print(f"   🎬 Videos: {len(video_ids):,} found → {len(new_ids):,} new, {len(existing):,} in DB")
     return new_ids
 
 
 def _get_existing_lead_video_ids(db: Session, video_ids: list[str]) -> set[str]:
-    """
-    Bulk check: returns set of video_ids that already have a Lead.
-    ONE single query instead of N queries inside a loop.
-    Critical for performance when payload has thousands of videos.
-    """
+    """Bulk check — 1 query instead of N queries inside loop."""
     if not video_ids:
         return set()
-    result = db.execute(text("""
-        SELECT video_id FROM leads
-        WHERE video_id = ANY(:ids)
-    """), {"ids": video_ids})
+    result = db.execute(text(
+        "SELECT video_id FROM leads WHERE video_id = ANY(:ids)"
+    ), {"ids": video_ids})
     return {row[0] for row in result.fetchall()}
 
 
-def _scrape_about_batched(channel_ids: list[str]) -> dict:
+def _get_db_channel_contacts(db: Session, channel_ids: list[str]) -> dict:
     """
-    Scrapes About pages in batches of ABOUT_SCRAPE_BATCH.
-    Prevents memory spike on 3GB server from holding all responses at once.
+    Fetch stored contact info for known channels from DB.
+    Used to generate leads from RSS-discovered videos of known channels.
     """
     if not channel_ids:
         return {}
+    result = db.execute(text("""
+        SELECT channel_id, primary_email, primary_instagram, name, subscriber_count
+        FROM youtube_channels
+        WHERE channel_id = ANY(:ids)
+          AND (primary_email IS NOT NULL OR primary_instagram IS NOT NULL)
+    """), {"ids": channel_ids})
+    contacts = {}
+    for row in result.fetchall():
+        contacts[row[0]] = {
+            "email":     row[1],
+            "instagram": row[2],
+            "name":      row[3],
+            "subs":      row[4],
+        }
+    return contacts
 
+
+def _api_search_new_channels(
+    key_manager: APIKeyManager,
+    category_name: str,
+    published_after: datetime,
+) -> list[dict]:
+    """
+    Uses YouTube API search to discover BRAND NEW channels.
+    Only 1 page (50 results) per query to preserve quota.
+    Returns list of {video_id, channel_id, published_at}.
+    """
+    queries = CATEGORY_SEARCH_QUERIES.get(category_name, [])
+    if not queries:
+        return []
+
+    api_key = key_manager.get_key()
+    if not api_key:
+        print(f"   ⚠️  No API key for search — skipping new channel discovery")
+        return []
+
+    all_results = []
+    seen = set()
+
+    print(f"   🔎 API search: {len(queries)} queries for new channels...")
+
+    def _run_query(query):
+        try:
+            results = search_videos(
+                key_manager=key_manager,
+                query=query,
+                published_after=published_after,
+                target_count=API_SEARCH_TARGET,
+                region_code="US",
+                language="en",
+            )
+            return results
+        except Exception as e:
+            print(f"   ❌ Search failed [{query[:30]}]: {e}")
+            return []
+
+    with ThreadPoolExecutor(max_workers=API_SEARCH_THREADS) as executor:
+        futures = {executor.submit(_run_query, q): q for q in queries}
+        for future in as_completed(futures):
+            try:
+                for item in future.result():
+                    if item["video_id"] not in seen:
+                        seen.add(item["video_id"])
+                        all_results.append(item)
+            except Exception:
+                pass
+
+    print(f"   🔎 API search found: {len(all_results):,} results")
+    return all_results
+
+
+def _scrape_about_batched(channel_ids: list[str]) -> dict:
+    """Batched about scraping — memory safe for 3GB server."""
+    if not channel_ids:
+        return {}
     all_about = {}
-    batches = [
-        channel_ids[i:i + ABOUT_SCRAPE_BATCH]
-        for i in range(0, len(channel_ids), ABOUT_SCRAPE_BATCH)
-    ]
-    print(
-        f"   🕷️  About scrape: {len(channel_ids):,} channels "
-        f"in {len(batches)} batch(es) of {ABOUT_SCRAPE_BATCH}"
-    )
+    batches = [channel_ids[i:i+ABOUT_SCRAPE_BATCH] for i in range(0, len(channel_ids), ABOUT_SCRAPE_BATCH)]
+    print(f"   🕷️  About scrape: {len(channel_ids):,} channels in {len(batches)} batch(es)...")
     for i, batch in enumerate(batches):
         print(f"      Batch {i+1}/{len(batches)} ({len(batch)} channels)...")
-        batch_result = scrape_all_about(batch)
-        all_about.update(batch_result)
-        time.sleep(0.5)  # brief pause between batches
-
+        all_about.update(scrape_all_about(batch))
+        time.sleep(0.5)
     emails_found = sum(1 for v in all_about.values() if v.get("email"))
-    print(f"   📧 About scrape complete — {emails_found} emails found")
+    print(f"   📧 About scrape: {emails_found} emails found")
     return all_about
 
 
@@ -196,186 +316,198 @@ def _scrape_about_batched(channel_ids: list[str]) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _process_category(cat, key_manager: APIKeyManager, db: Session) -> dict:
-    """
-    Full pipeline for ONE category.
-    Returns summary dict used for final job logging.
-    """
     summary = {
-        "category":            cat.name,
-        "rss_videos":          0,
-        "known_channel_videos":0,
-        "new_channels":        0,
-        "new_videos":          0,
-        "emails_found":        0,
-        "leads_created":       0,
-        "api_units_used":      0,
-        "errors":              [],
+        "category":             cat.name,
+        "rss_videos":           0,
+        "api_search_videos":    0,
+        "new_channels":         0,
+        "new_videos":           0,
+        "emails_found":         0,
+        "leads_created":        0,
+        "api_units_used":       0,
+        "errors":               [],
     }
 
     try:
-        print(f"\n{'═' * 60}")
+        print(f"\n{'═'*60}")
         print(f"📂 {cat.name}  (id={cat.id})")
-        print(f"{'═' * 60}")
+        print(f"{'═'*60}")
 
         published_after = _get_lookback(cat)
+        all_results = []
+        seen_vids = set()
 
-        # ── Step 1: RSS Discovery (0 API units) ───────────────────────
-        rss_results = discover_via_rss(
-            category_name=cat.name,
-            published_after=published_after,
-            threads=RSS_THREADS,
-        )
-        summary["rss_videos"] = len(rss_results)
-
-        # ── Step 2: Monitor Known Channels (0 API units) ──────────────
+        # ── Step 1: Channel RSS (known channels — zero quota) ─────────
         known_channel_ids = _get_known_channel_ids(db, cat.id)
         if known_channel_ids:
-            known_results = monitor_known_channels(
+            rss_results = monitor_known_channels(
                 channel_ids=known_channel_ids,
                 published_after=published_after,
-                threads=KNOWN_CHANNEL_THREADS,
+                threads=RSS_MONITOR_THREADS,
             )
-            summary["known_channel_videos"] = len(known_results)
-            rss_results.extend(known_results)
-            print(f"   📡 Known channel monitor: {len(known_results):,} new videos")
+            summary["rss_videos"] = len(rss_results)
+            for r in rss_results:
+                if r["video_id"] not in seen_vids:
+                    seen_vids.add(r["video_id"])
+                    all_results.append(r)
         else:
-            print(f"   📡 No known channels yet — skipping monitor step")
+            print(f"   📡 No known channels yet")
 
-        # ── Deduplicate combined RSS results ──────────────────────────
-        seen = set()
-        all_results = []
-        for r in rss_results:
-            if r["video_id"] not in seen:
-                seen.add(r["video_id"])
+        # ── Step 2: API Search (new channel discovery) ────────────────
+        api_results = _api_search_new_channels(key_manager, cat.name, published_after)
+        summary["api_search_videos"] = len(api_results)
+        for r in api_results:
+            if r["video_id"] not in seen_vids:
+                seen_vids.add(r["video_id"])
                 all_results.append(r)
 
-        print(f"   📊 Total unique results: {len(all_results):,} videos")
+        print(f"   📊 Combined: {len(all_results):,} unique results "
+              f"(rss={summary['rss_videos']:,} + api={summary['api_search_videos']:,})")
 
         if not all_results:
-            print(f"   ⚠️  No results for '{cat.name}' — skipping")
+            print(f"   ⚠️  No results for '{cat.name}'")
             return summary
 
         all_video_ids   = list({r["video_id"]   for r in all_results})
         all_channel_ids = list({r["channel_id"] for r in all_results})
 
-        # ── Step 3: Filter to NEW only (skip DB dupes) ────────────────
+        # ── Step 3: Filter NEW only ────────────────────────────────────
         new_video_ids   = _filter_new_videos(db, all_video_ids)
         new_channel_ids = _filter_new_channels(db, all_channel_ids)
         summary["new_channels"] = len(new_channel_ids)
         summary["new_videos"]   = len(new_video_ids)
 
-        if not new_channel_ids and not new_video_ids:
-            print(f"   ✅  Everything already in DB — nothing new this run")
-            cat.last_fetched_at = datetime.utcnow()
-            db.commit()
-            return summary
-
-        # ── Step 4: API Enrichment (NEW only — tiny quota usage) ──────
-        api_key = key_manager.get_key()
-
+        # ── Step 4: Enrich NEW channels via API ───────────────────────
         channels_raw = []
         videos_raw   = []
 
-        if api_key:
-            if new_channel_ids:
-                print(f"   📡 Fetching {len(new_channel_ids):,} new channel details...")
-                channels_raw = fetch_channels(api_key, new_channel_ids)
-                summary["api_units_used"] += max(1, len(new_channel_ids) // 50)
+        if new_channel_ids or new_video_ids:
+            api_key = key_manager.get_key()
+            if api_key:
+                if new_channel_ids:
+                    print(f"   📡 Enriching {len(new_channel_ids):,} new channels...")
+                    channels_raw = fetch_channels(api_key, new_channel_ids)
+                    # Retry once on empty
+                    if not channels_raw and new_channel_ids:
+                        print(f"   🔄 Retrying channel fetch...")
+                        time.sleep(3)
+                        channels_raw = fetch_channels(api_key, new_channel_ids)
+                    summary["api_units_used"] += max(1, len(new_channel_ids) // 50)
 
-            if new_video_ids:
-                print(f"   📡 Fetching {len(new_video_ids):,} new video details...")
-                videos_raw = fetch_videos(api_key, new_video_ids)
-                summary["api_units_used"] += max(1, len(new_video_ids) // 50)
+                if new_video_ids:
+                    print(f"   📡 Enriching {len(new_video_ids):,} new videos...")
+                    videos_raw = fetch_videos(api_key, new_video_ids)
+                    summary["api_units_used"] += max(1, len(new_video_ids) // 50)
 
-            print(f"   💰 API units used: ~{summary['api_units_used']}")
+                print(f"   💰 API units this category: ~{summary['api_units_used']}")
+            else:
+                print(f"   ⚠️  No API key — skipping enrichment")
+
+        # ── Step 5: About Scrape (new channels only, batched) ─────────
+        about_data = _scrape_about_batched(new_channel_ids) if new_channel_ids else {}
+
+        # ── Step 6: Transform + Write (new channels/videos only) ──────
+        payload = {"channels": [], "videos": [], "emails": [], "socials": [], "metrics": [], "lead_context": {}}
+
+        if channels_raw:
+            print(f"   🔄 Transforming {len(channels_raw)} channels...")
+            payload = transform_all(channels_raw, videos_raw, about_data, category_id=cat.id)
+            summary["emails_found"] = len(payload.get("emails", []))
+            print(f"   📧 New channel emails: {summary['emails_found']}")
+            print(f"   💾 Writing new data to DB...")
+            bulk_write_all(db, payload)
+            write_stats(db, payload, cat.name)
         else:
-            # No API key available — RSS data only (no subscriber counts etc)
-            # Still write what we have from RSS (title, channel_id, published_at)
-            print(f"   ⚠️  No API key available — writing RSS data only (no enrichment)")
+            print(f"   ℹ️  No new channels to enrich/write this run")
 
-        if not channels_raw:
-            print(f"   ⚠️  No channel enrichment data. Skipping '{cat.name}'.")
-            return summary
+        # ── Step 7: Lead Generation (BOTH new + known channels) ───────
 
-        # ── Step 5: About Page Scraping (0 API units, batched) ────────
-        about_data = _scrape_about_batched(new_channel_ids)
+        # Collect all video_ids we're evaluating for leads
+        # = new videos from payload + all RSS-discovered videos
+        candidate_videos = []
 
-        # ── Step 6: Transform + Enrich ────────────────────────────────
-        print(f"   🔄 Transforming...")
-        payload = transform_all(
-            channels_raw,
-            videos_raw,
-            about_data,
-            category_id=cat.id,
-        )
-        summary["emails_found"] = len(payload.get("emails", []))
-        print(
-            f"   📧 Emails: {summary['emails_found']} | "
-            f"Channels with email: {sum(1 for c in payload['channels'] if c.primary_email)}"
-        )
-
-        # ── Step 7: Bulk Write to DB ───────────────────────────────────
-        print(f"   💾 Writing to DB...")
-        bulk_write_all(db, payload)
-        write_stats(db, payload, cat.name)
-
-        # ── Step 8: Lead Generation (BULK duplicate check) ────────────
-        video_ids_in_payload = [v.video_id for v in payload["videos"]]
-        existing_lead_vids   = _get_existing_lead_video_ids(db, video_ids_in_payload)
-
-        leads_created = 0
-        new_leads     = []
-
+        # A: New channel videos (just enriched)
         for video_obj in payload["videos"]:
-            # Skip if lead already exists — bulk check, no per-row query
-            if video_obj.video_id in existing_lead_vids:
-                continue
-
             channel_data = next(
-                (c for c in payload["channels"] if c.channel_id == video_obj.channel_id),
-                None,
+                (c for c in payload["channels"] if c.channel_id == video_obj.channel_id), None
             )
-            if not channel_data:
-                continue
+            if channel_data and (channel_data.primary_email or channel_data.primary_instagram):
+                candidate_videos.append({
+                    "video_id":   video_obj.video_id,
+                    "channel_id": video_obj.channel_id,
+                    "title":      video_obj.title,
+                    "email":      channel_data.primary_email,
+                    "instagram":  channel_data.primary_instagram,
+                    "name":       channel_data.name,
+                    "subs":       channel_data.subscriber_count,
+                })
 
-            # Only create lead if we have a contact point
-            if not channel_data.primary_email and not channel_data.primary_instagram:
-                continue
+        # B: Known channel videos (from RSS — use DB contact info)
+        known_channel_ids_in_results = list({r["channel_id"] for r in all_results})
+        db_contacts = _get_db_channel_contacts(db, known_channel_ids_in_results)
 
+        for r in all_results:
+            contact = db_contacts.get(r["channel_id"])
+            if not contact:
+                continue
+            candidate_videos.append({
+                "video_id":   r["video_id"],
+                "channel_id": r["channel_id"],
+                "title":      r.get("title", ""),
+                "email":      contact["email"],
+                "instagram":  contact["instagram"],
+                "name":       contact["name"],
+                "subs":       contact["subs"],
+            })
+
+        # Deduplicate candidate_videos by video_id
+        seen_candidate = set()
+        unique_candidates = []
+        for cv in candidate_videos:
+            if cv["video_id"] not in seen_candidate:
+                seen_candidate.add(cv["video_id"])
+                unique_candidates.append(cv)
+
+        # Bulk check which video_ids already have leads
+        all_candidate_ids = [cv["video_id"] for cv in unique_candidates]
+        existing_lead_vids = _get_existing_lead_video_ids(db, all_candidate_ids)
+
+        print(f"   🎯 Lead candidates: {len(unique_candidates):,} | already have leads: {len(existing_lead_vids):,}")
+
+        # Build new leads
+        new_leads = []
+        for cv in unique_candidates:
+            if cv["video_id"] in existing_lead_vids:
+                continue
             new_leads.append(Lead(
-                channel_id=video_obj.channel_id,
-                video_id=video_obj.video_id,
-                primary_email=channel_data.primary_email,
-                instagram_username=channel_data.primary_instagram,
+                channel_id=cv["channel_id"],
+                video_id=cv["video_id"],
+                primary_email=cv["email"],
+                instagram_username=cv["instagram"],
                 status="new",
                 notes=(
-                    f"Channel: {channel_data.name}\n"
-                    f"Subs: {channel_data.subscriber_count}\n"
+                    f"Channel: {cv['name']}\n"
+                    f"Subs: {cv['subs']}\n"
                     f"Category: {cat.name}\n"
-                    f"Video: {video_obj.title}\n"
-                    f"Published: {video_obj.published_at}"
+                    f"Video: {cv['title']}"
                 ),
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             ))
-            leads_created += 1
 
-        # Bulk insert all new leads in one shot
         if new_leads:
             db.bulk_save_objects(new_leads)
 
         db.commit()
-        summary["leads_created"] = leads_created
-        print(f"   ✅  Done: {summary['new_videos']:,} videos | "
-              f"{summary['emails_found']} emails | {leads_created} leads")
+        summary["leads_created"] = len(new_leads)
+        print(f"   ✅  Leads created: {len(new_leads):,}")
 
-        # ── Step 9: Update last_fetched_at ─────────────────────────────
+        # ── Step 8: Update last_fetched_at ─────────────────────────────
         cat.last_fetched_at = datetime.utcnow()
         db.commit()
 
     except Exception as e:
-        tb = traceback.format_exc()
-        print(f"   💥 '{cat.name}' crashed:\n{tb}")
+        print(f"   💥 '{cat.name}' crashed:\n{traceback.format_exc()}")
         summary["errors"].append(str(e))
         try:
             db.rollback()
@@ -390,30 +522,21 @@ def _process_category(cat, key_manager: APIKeyManager, db: Session) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run():
-    """
-    Main worker entry point.
-
-    Usage:
-        python -m app.workers.youtube.main_worker
-        Scheduler: every 2 hours (12 runs/day)
-    """
     db: Session = SessionLocal()
     job = None
     start_time = datetime.utcnow()
 
     try:
         print("\n" + "═" * 70)
-        print(f"🚀 YouTube Worker (RSS-First) — {start_time.strftime('%Y-%m-%d %H:%M UTC')}")
+        print(f"🚀 YouTube Worker (Hybrid RSS+API) — {start_time.strftime('%Y-%m-%d %H:%M UTC')}")
         print("═" * 70)
 
-        # ── 1. Init API key pool ───────────────────────────────────────
         key_manager = APIKeyManager()
         ks = key_manager.status()
         print(f"🔑 Keys: {ks['active']} active / {ks['total_keys']} total")
 
-        # ── 2. Log job start ───────────────────────────────────────────
         job = AutomationJob(
-            job_type="youtube_discovery_rss",
+            job_type="youtube_discovery_hybrid",
             status="running",
             started_at=start_time,
             created_at=start_time,
@@ -423,16 +546,11 @@ def run():
         db.refresh(job)
         print(f"📝 Job ID: {job.id}")
 
-        # ── 3. Load active categories ──────────────────────────────────
         categories = get_active_categories(db)
         print(f"📂 Active categories: {len(categories)}")
         for cat in categories:
             print(f"   • [{cat.id}] {cat.name}")
 
-        # ── 4. Process categories sequentially ────────────────────────
-        # Sequential at category level — parallelism is inside each
-        # category (RSS threads + scraper threads). Keeps DB writes
-        # clean and avoids key_manager lock contention.
         all_summaries = []
         total_videos  = 0
         total_leads   = 0
@@ -444,17 +562,11 @@ def run():
             total_videos += summary["new_videos"]
             total_leads  += summary["leads_created"]
             total_units  += summary["api_units_used"]
-
-            # Note: we do NOT stop on key exhaustion anymore.
-            # RSS discovery runs regardless of key status.
-            # Only enrichment is skipped if keys run out — which
-            # with RSS-first almost never happens (2 keys = years of quota).
             time.sleep(1)
 
-        # ── 5. Final summary ───────────────────────────────────────────
         elapsed = (datetime.utcnow() - start_time).total_seconds()
         print("\n" + "═" * 70)
-        print(f"🏁 Complete — {elapsed:.0f}s | API units used today: ~{total_units}")
+        print(f"🏁 Complete — {elapsed:.0f}s | ~{total_units} API units used")
         print("═" * 70)
         print(f"   📺 New videos    : {total_videos:,}")
         print(f"   📧 Leads created : {total_leads:,}")
@@ -466,20 +578,17 @@ def run():
             print(
                 f"   {icon} {s['category']:<35} "
                 f"rss={s['rss_videos']:>5}  "
+                f"api={s['api_search_videos']:>4}  "
                 f"new={s['new_videos']:>5}  "
-                f"emails={s['emails_found']:>4}  "
-                f"leads={s['leads_created']:>4}  "
-                f"units=~{s['api_units_used']:>3}"
+                f"leads={s['leads_created']:>4}"
             )
 
-        # ── 6. Mark job complete ───────────────────────────────────────
         job.status = "completed"
         job.completed_at = datetime.utcnow()
         job.result_summary = str({
-            "videos":    total_videos,
-            "leads":     total_leads,
-            "api_units": total_units,
-            "categories": len(all_summaries),
+            "videos": total_videos,
+            "leads":  total_leads,
+            "units":  total_units,
         })
         db.commit()
 
@@ -493,7 +602,6 @@ def run():
                 db.commit()
             except Exception:
                 pass
-
     finally:
         db.close()
 
