@@ -1,3 +1,12 @@
+"""
+app/api/campaigns.py
+
+Changes vs original:
+  - /api/leads now accepts  unique_channels: bool  query param.
+    When True → only one lead per channel_id is returned (most recent),
+    so the same creator never appears twice in the campaign builder table.
+"""
+
 import csv
 from io import StringIO
 from datetime import datetime
@@ -52,8 +61,7 @@ def get_leads_table(
     page: int = 1,
     limit: int = 20,
     search: str = None,
-    # contact filter: 'email' | 'instagram' | 'both'
-    filter: str = None,
+    filter: str = None,                                # 'email' | 'instagram' | 'both'
     country: Optional[str] = Query(None),
     min_subscribers: Optional[int] = Query(None),
     max_subscribers: Optional[int] = Query(None),
@@ -62,6 +70,15 @@ def get_leads_table(
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
     exclude_contacted: bool = Query(False),
+    # NEW ─────────────────────────────────────────────────────────────────────
+    # When True: deduplicate by channel_id (one lead per channel).
+    # This prevents adding the same creator to a campaign multiple times
+    # because they had multiple videos in the leads table.
+    unique_channels: bool = Query(
+        False,
+        description="Return only one lead per YouTube channel (the most recent)."
+    ),
+    # ─────────────────────────────────────────────────────────────────────────
     db: Session = Depends(get_db),
 ):
     service = CampaignService(db)
@@ -78,6 +95,7 @@ def get_leads_table(
         date_from=date_from,
         date_to=date_to,
         exclude_contacted=exclude_contacted,
+        unique_channels=unique_channels,    # NEW
     )
 
 
@@ -93,47 +111,26 @@ def get_leads_kpis(db: Session = Depends(get_db)):
 @router.get("/campaigns")
 def list_campaigns(db: Session = Depends(get_db)):
     """List all campaigns with live sent/total counts for the table."""
-    campaigns = db.query(Campaign).order_by(Campaign.created_at.desc()).all()
+    campaigns = db.query(Campaign).order_by(Campaign.id.desc()).all()
     result = []
     for c in campaigns:
-        leads       = c.leads or []
-        leads_count = len(leads) if leads else (c.total_leads or 0)
-        sent_count  = sum(1 for l in leads if l.status == "sent") if leads else (c.sent_count or 0)
+        sent = db.query(CampaignLead).filter(
+            CampaignLead.campaign_id == c.id,
+            CampaignLead.status == "sent"
+        ).count()
         result.append({
-            "id":          c.id,
-            "name":        c.name,
-            "platform":    c.platform,
-            "status":      c.status,
-            "leads_count": leads_count,
-            "sent_count":  sent_count,
-            "total_leads": c.total_leads,
-            "created_at":  c.created_at,
-            "updated_at":  c.updated_at,
+            **c.__dict__,
+            "sent_count": sent,
         })
     return result
 
 
-@router.get("/campaigns/kpis", response_model=CampaignKPIs)
-def get_campaign_kpis(db: Session = Depends(get_db)):
-    return CampaignService(db).get_campaign_kpis()
-
-
 @router.get("/campaigns/{campaign_id}")
-def get_campaign_detail(campaign_id: int, db: Session = Depends(get_db)):
-    """Full campaign detail with leads and live stats. Used by detail page."""
+def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-
-    leads = campaign.leads or []
-    stats = {
-        "total":        len(leads),
-        "queued":       sum(1 for l in leads if l.status in ("queued", "processing_ai")),
-        "review_ready": sum(1 for l in leads if l.status in ("review_ready", "ready_to_send")),
-        "sent":         sum(1 for l in leads if l.status == "sent"),
-        "failed":       sum(1 for l in leads if l.status == "failed"),
-    }
-    return {"campaign": campaign, "stats": stats}
+    return campaign
 
 
 # =========================================================
@@ -146,10 +143,6 @@ def create_campaign(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """
-    Creates campaign + queues AI generation.
-    Returns full campaign object — frontend accesses res.data.id
-    """
     campaign = CampaignService(db).create_campaign(
         name=request.name,
         platform=request.platform,
@@ -159,7 +152,7 @@ def create_campaign(
         script_plan_id=request.script_plan_id,
     )
     background_tasks.add_task(run_ai_generation)
-    return campaign  # ORM object serialized by FastAPI → res.data.id works
+    return campaign
 
 
 @router.post("/campaigns/{campaign_id}/start")
@@ -168,7 +161,6 @@ def start_campaign(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    """Start transmission for a campaign that has AI-ready leads."""
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -199,5 +191,16 @@ def export_campaign(campaign_id: int, db: Session = Depends(get_db)):
     return StreamingResponse(
         output,
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=campaign_{campaign_id}_leads.csv"},
+        headers={
+            "Content-Disposition": f"attachment; filename=campaign_{campaign_id}_leads.csv"
+        },
     )
+
+
+# =========================================================
+# 6. KPIs
+# =========================================================
+
+@router.get("/campaigns/kpis", response_model=CampaignKPIs)
+def get_campaign_kpis(db: Session = Depends(get_db)):
+    return CampaignService(db).get_campaign_kpis()

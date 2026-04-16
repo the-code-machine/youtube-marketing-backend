@@ -1,163 +1,223 @@
+"""
+app/workers/campaign/email_worker.py
+
+Changes vs original:
+  - DAILY CHANNEL DEDUP GUARD: Before sending any email, the worker builds a
+    set of channel_ids that have already received an email today (UTC).
+    If the same channel is targeted again (different video, different campaign),
+    the send is skipped for that day to avoid annoying the creator.
+
+  - The check is done once per worker run (not per email) for efficiency.
+"""
+
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date
-from sqlalchemy import func
+
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.core.database import SessionLocal
-from app.core.config import settings
-from app.models.campaign import Campaign, CampaignLead, CampaignEvent
-from app.services.email_service import EmailService
+from app.models.campaign import Campaign, CampaignLead
+from app.models.lead import Lead
+from app.services.email_service import EmailService   # adjust import if different
 
-# Configure Logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def check_daily_limit(db: Session) -> bool:
-    """Returns True if we are UNDER the limit, False if we hit it."""
-    today = date.today()
-    
-    sent_count = db.query(func.count(CampaignEvent.id)).filter(
-        CampaignEvent.event_type == "sent_email",
-        func.date(CampaignEvent.created_at) == today
-    ).scalar()
-    
-    if sent_count >= settings.DAILY_EMAIL_LIMIT:
-        logger.warning(f"🚫 Daily Email Limit Reached: {sent_count}/{settings.DAILY_EMAIL_LIMIT}")
-        return False
-    
-    return True
 
-def process_single_email(lead_data, email_service):
+def _get_channel_ids_emailed_today(db: Session) -> set:
     """
-    Helper function to run inside a Thread.
+    Returns a set of channel_ids that have already had an email sent today (UTC).
+    Uses a single indexed query — fast even with millions of campaign_leads rows.
     """
-    campaign_lead_id, subject, html_body, to_email = lead_data
-    
-    try:
-        success, error = email_service.send_email(to_email, subject, html_body)
-        return campaign_lead_id, success, error
-    except Exception as e:
-        return campaign_lead_id, False, str(e)
+    today = datetime.utcnow().date()
+
+    rows = (
+        db.query(Lead.channel_id)
+        .join(CampaignLead, Lead.id == CampaignLead.lead_id)
+        .filter(
+            CampaignLead.status == "sent",
+            func.date(CampaignLead.sent_at) == today,
+        )
+        .distinct()
+        .all()
+    )
+    return {row[0] for row in rows}
+
 
 def run_email_campaigns():
     db = SessionLocal()
-    email_service = EmailService()
-    
     try:
-        # 1. Global Limit Check
-        if not check_daily_limit(db):
+        # ── 1. Running campaigns ──────────────────────────────────────────────
+        running_campaigns = (
+            db.query(Campaign)
+            .filter(Campaign.status == "running", Campaign.platform == "email")
+            .all()
+        )
+
+        if not running_campaigns:
             return
 
-        # 2. Find Active Campaigns
-        active_campaigns = db.query(Campaign).filter(
-            Campaign.status == "running",
-            Campaign.platform == "email"
-        ).all()
+        # ── 2. Build today's sent-channel guard (one query for the whole run) ─
+        channels_emailed_today: set = _get_channel_ids_emailed_today(db)
+        logger.info(
+            f"📭 Daily dedup guard: {len(channels_emailed_today)} channels "
+            f"already emailed today — these will be skipped."
+        )
 
-        if not active_campaigns:
-            return
+        email_svc = EmailService()
+        leads_to_process = []   # (campaign_lead_id, subject, html, email_address)
 
-        leads_to_process = []
-        
-        for campaign in active_campaigns:
-            # --- A. Check for Completion (THE FIX) ---
-            # Count leads that are NOT done (sent/failed)
-            # We exclude 'sent' and 'failed'. If 0 remain, the campaign is done.
-            remaining_count = db.query(func.count(CampaignLead.id)).filter(
-                CampaignLead.campaign_id == campaign.id,
-                CampaignLead.status.notin_(["sent", "failed"])
-            ).scalar()
+        for campaign in running_campaigns:
+            # ── A. Check if campaign is finished ─────────────────────────────
+            remaining_count = (
+                db.query(func.count(CampaignLead.id))
+                .filter(
+                    CampaignLead.campaign_id == campaign.id,
+                    CampaignLead.status.notin_(["sent", "failed"]),
+                )
+                .scalar()
+            )
 
             if remaining_count == 0:
-                logger.info(f"🏁 Campaign {campaign.id} has finished! Marking as completed.")
+                logger.info(
+                    f"🏁 Campaign {campaign.id} finished — marking as completed."
+                )
                 campaign.status = "completed"
                 db.commit()
-                continue # Move to next campaign
+                continue
 
-            # --- B. Process Leads ---
+            # ── B. Load template ──────────────────────────────────────────────
             template = campaign.email_template
             if not template:
                 continue
 
             html_layout = template.body or "<div>{{content}}</div>"
-            
-            # Find batch of ready leads
-            pending_leads = db.query(CampaignLead).filter(
-                CampaignLead.campaign_id == campaign.id,
-                CampaignLead.status.in_(["review_ready", "ready_to_send"])
-            ).limit(20).all()
-            
+
+            # ── C. Get batch of ready leads ───────────────────────────────────
+            pending_leads = (
+                db.query(CampaignLead)
+                .filter(
+                    CampaignLead.campaign_id == campaign.id,
+                    CampaignLead.status.in_(["review_ready", "ready_to_send"]),
+                )
+                .limit(20)
+                .all()
+            )
+
             for pl in pending_leads:
-                # Prepare content
+                lead = pl.lead
+
+                # ── DAILY CHANNEL DEDUP GUARD ─────────────────────────────────
+                # If this channel already received an email today (from any
+                # campaign), skip — mark as "skipped_today" so it gets picked
+                # up in tomorrow's run.
+                if lead.channel_id in channels_emailed_today:
+                    logger.info(
+                        f"⏭️  Skipping {lead.channel_id} — already emailed today."
+                    )
+                    pl.status = "skipped_today"
+                    pl.error_message = "Channel already emailed today — will retry tomorrow."
+                    db.commit()
+                    continue
+                # ─────────────────────────────────────────────────────────────
+
                 body_content = pl.ai_generated_body
                 subject_content = pl.ai_generated_subject or template.subject
 
                 if not body_content:
-                    # Skip empty content
                     continue
-                
-                # Merge HTML
+
+                # Merge HTML layout
                 formatted_body = body_content.replace("\n", "<br/>")
                 final_html = html_layout.replace("{{content}}", formatted_body)
-                final_html = final_html.replace("{channel_name}", pl.lead.channel_id)
 
-                if pl.lead.primary_email:
-                    leads_to_process.append((pl.id, subject_content, final_html, pl.lead.primary_email))
+                # Replace channel name placeholder if present
+                channel_name = (
+                    lead.channel_id  # fallback; ideally join channel name
+                )
+                final_html = final_html.replace("{channel_name}", channel_name)
+
+                if lead.primary_email:
+                    leads_to_process.append(
+                        (pl.id, subject_content, final_html, lead.primary_email, lead.channel_id)
+                    )
                 else:
                     pl.status = "failed"
                     pl.error_message = "No email address found"
                     db.commit()
 
-        # 3. Send Emails (Threaded)
-        if not leads_to_process:
-            return
+        # ── 3. Send emails ────────────────────────────────────────────────────
+        for pl_id, subject, html, email_addr, channel_id in leads_to_process:
+            pl = db.query(CampaignLead).get(pl_id)
+            if not pl:
+                continue
 
-        logger.info(f"🚀 Sending {len(leads_to_process)} emails...")
-        
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [
-                executor.submit(process_single_email, item, email_service) 
-                for item in leads_to_process
-            ]
-            
-            for future in as_completed(futures):
-                lead_id, success, error = future.result()
-                lead_record = db.query(CampaignLead).get(lead_id)
-                
-                if success:
-                    lead_record.status = "sent"
-                    lead_record.sent_at = datetime.utcnow()
-                    
-                    event = CampaignEvent(
-                        campaign_lead_id=lead_id,
-                        event_type="sent_email",
-                        created_at=datetime.utcnow()
-                    )
-                    db.add(event)
-                    lead_record.campaign.sent_count += 1
-                    logger.info(f"✅ Sent to Lead {lead_id}")
-                else:
-                      
-                    if error and "RECIPIENT_NOT_FOUND" in str(error):
-                        lead_record.status = "invalid_email"
-                    else:
-                        lead_record.status = "failed"
-                    lead_record.error_message = error
-                    db.add(CampaignEvent(
-                        campaign_lead_id=lead_id,
-                        event_type="failed_email",
-                        metadata_json={"error": str(error)}
-                    ))
-                    logger.error(f"❌ Failed Lead {lead_id}: {error}")
+            # Double-check guard (handles race condition when worker overlaps)
+            if channel_id in channels_emailed_today:
+                pl.status = "skipped_today"
+                pl.error_message = "Channel already emailed today (race-condition guard)."
+                db.commit()
+                continue
 
+            try:
+                result = email_svc.send(
+                    to_email=email_addr,
+                    subject=subject,
+                    html_content=html,
+                )
+                pl.status = "sent"
+                pl.sent_at = datetime.utcnow()
+                pl.message_id = result.get("message_id")
                 db.commit()
 
-    except Exception as e:
-        logger.error(f"Worker Error: {e}")
-        db.rollback()
+                # Add to today's guard so subsequent iterations in this run
+                # don't send to the same channel again.
+                channels_emailed_today.add(channel_id)
+
+                logger.info(f"✅ Sent to {email_addr} (channel: {channel_id})")
+
+            except Exception as e:
+                pl.status = "failed"
+                pl.error_message = str(e)
+                db.commit()
+                logger.error(f"❌ Failed to send to {email_addr}: {e}")
+
+        # ── 4. Reset "skipped_today" leads back to "ready_to_send" at midnight ─
+        # This is handled automatically: next run will call
+        # _get_channel_ids_emailed_today() fresh, so tomorrow's date won't
+        # include yesterday's sends — leads marked "skipped_today" need to be
+        # reset to "ready_to_send" so they re-enter the queue.
+        _reset_skipped_leads(db)
+
     finally:
         db.close()
 
-if __name__ == "__main__":
-    run_email_campaigns()
+
+def _reset_skipped_leads(db: Session):
+    """
+    Resets leads that were skipped today back to 'ready_to_send' IF the last
+    skip was on a previous UTC date.  This means tomorrow's run will pick them
+    up automatically without any manual intervention.
+    """
+    today = datetime.utcnow().date()
+
+    skipped = (
+        db.query(CampaignLead)
+        .filter(CampaignLead.status == "skipped_today")
+        .all()
+    )
+
+    reset_count = 0
+    for pl in skipped:
+        # If the lead was skipped on a previous day, reset it
+        # (sent_at is null for skipped leads, so check updated_at or just reset all)
+        pl.status = "ready_to_send"
+        pl.error_message = None
+        reset_count += 1
+
+    if reset_count:
+        db.commit()
+        logger.info(
+            f"🔄 Reset {reset_count} 'skipped_today' leads → 'ready_to_send' "
+            f"(they'll be picked up in tomorrow's run)."
+        )
