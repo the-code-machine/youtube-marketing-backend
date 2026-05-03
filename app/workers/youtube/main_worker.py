@@ -34,8 +34,12 @@ ALL FIXES:
   ✅ DB rollback on crash
 """
 
-import sys
+# ── MUST be first — before any app imports touch database.py ─────────────────
 import os
+os.environ["GLOSSOUR_WORKER_MODE"] = "true"
+# ─────────────────────────────────────────────────────────────────────────────
+
+import sys
 import time
 import traceback
 from datetime import datetime, timedelta
@@ -69,21 +73,12 @@ from app.workers.youtube.stats_writer import write_stats
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-# API search for new channel discovery
-# 1 page = 50 results = 100 units per job
-# Keep low to preserve quota for enrichment
-API_SEARCH_TARGET      = 50    # 1 page only per job
-API_SEARCH_THREADS     = 5     # parallel search jobs
-
-# Channel RSS monitoring
-RSS_MONITOR_THREADS    = 20    # threads for known channel RSS checks
-KNOWN_CHANNEL_LIMIT    = 3000  # max known channels to re-check per run
-
-# About scraper (3GB RAM safe)
+API_SEARCH_TARGET      = 50
+API_SEARCH_THREADS     = 5
+RSS_MONITOR_THREADS    = 20
+KNOWN_CHANNEL_LIMIT    = 3000
 ABOUT_SCRAPE_THREADS   = 10
 ABOUT_SCRAPE_BATCH     = 300
-
-# Lookback windows
 LOOKBACK_FIRST_RUN_DAYS      = 3
 LOOKBACK_NORMAL_HOURS        = 26
 LOOKBACK_STALE_THRESHOLD_HRS = 48
@@ -91,7 +86,6 @@ LOOKBACK_STALE_THRESHOLD_HRS = 48
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SEARCH QUERIES PER CATEGORY
-# Short list — 1 page each = minimal quota for new channel discovery
 # ══════════════════════════════════════════════════════════════════════════════
 
 CATEGORY_SEARCH_QUERIES = {
@@ -173,7 +167,6 @@ def _get_lookback(cat) -> datetime:
 
 
 def _get_known_channel_ids(db: Session, category_id: int) -> list[str]:
-    """Most recently active channels in DB for this category."""
     result = db.execute(text("""
         SELECT channel_id FROM youtube_channels
         WHERE category_id = :cat_id AND is_active = true
@@ -208,7 +201,6 @@ def _filter_new_videos(db: Session, video_ids: list[str]) -> list[str]:
 
 
 def _get_existing_lead_video_ids(db: Session, video_ids: list[str]) -> set[str]:
-    """Bulk check — 1 query instead of N queries inside loop."""
     if not video_ids:
         return set()
     result = db.execute(text(
@@ -218,10 +210,6 @@ def _get_existing_lead_video_ids(db: Session, video_ids: list[str]) -> set[str]:
 
 
 def _get_db_channel_contacts(db: Session, channel_ids: list[str]) -> dict:
-    """
-    Fetch stored contact info for known channels from DB.
-    Used to generate leads from RSS-discovered videos of known channels.
-    """
     if not channel_ids:
         return {}
     result = db.execute(text("""
@@ -246,11 +234,6 @@ def _api_search_new_channels(
     category_name: str,
     published_after: datetime,
 ) -> list[dict]:
-    """
-    Uses YouTube API search to discover BRAND NEW channels.
-    Only 1 page (50 results) per query to preserve quota.
-    Returns list of {video_id, channel_id, published_at}.
-    """
     queries = CATEGORY_SEARCH_QUERIES.get(category_name, [])
     if not queries:
         return []
@@ -296,7 +279,6 @@ def _api_search_new_channels(
 
 
 def _scrape_about_batched(channel_ids: list[str]) -> dict:
-    """Batched about scraping — memory safe for 3GB server."""
     if not channel_ids:
         return {}
     all_about = {}
@@ -387,7 +369,6 @@ def _process_category(cat, key_manager: APIKeyManager, db: Session) -> dict:
                 if new_channel_ids:
                     print(f"   📡 Enriching {len(new_channel_ids):,} new channels...")
                     channels_raw = fetch_channels(api_key, new_channel_ids)
-                    # Retry once on empty
                     if not channels_raw and new_channel_ids:
                         print(f"   🔄 Retrying channel fetch...")
                         time.sleep(3)
@@ -421,9 +402,6 @@ def _process_category(cat, key_manager: APIKeyManager, db: Session) -> dict:
             print(f"   ℹ️  No new channels to enrich/write this run")
 
         # ── Step 7: Lead Generation (BOTH new + known channels) ───────
-
-        # Collect all video_ids we're evaluating for leads
-        # = new videos from payload + all RSS-discovered videos
         candidate_videos = []
 
         # A: New channel videos (just enriched)
@@ -460,7 +438,7 @@ def _process_category(cat, key_manager: APIKeyManager, db: Session) -> dict:
                 "subs":       contact["subs"],
             })
 
-        # Deduplicate candidate_videos by video_id
+        # Deduplicate by video_id
         seen_candidate = set()
         unique_candidates = []
         for cv in candidate_videos:
@@ -468,13 +446,12 @@ def _process_category(cat, key_manager: APIKeyManager, db: Session) -> dict:
                 seen_candidate.add(cv["video_id"])
                 unique_candidates.append(cv)
 
-        # Bulk check which video_ids already have leads
+        # Bulk check existing leads
         all_candidate_ids = [cv["video_id"] for cv in unique_candidates]
         existing_lead_vids = _get_existing_lead_video_ids(db, all_candidate_ids)
 
         print(f"   🎯 Lead candidates: {len(unique_candidates):,} | already have leads: {len(existing_lead_vids):,}")
 
-        # Build new leads
         new_leads = []
         for cv in unique_candidates:
             if cv["video_id"] in existing_lead_vids:
