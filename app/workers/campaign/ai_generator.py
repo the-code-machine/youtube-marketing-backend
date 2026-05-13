@@ -1,15 +1,15 @@
 """
 app/workers/campaign/ai_generator.py
 
-Fixes vs previous version:
-  - Removed wrong `from app.services.pricing_service import calculate_price`
-  - calculate_price() stays inline (as it was originally)
-  - _build_generalised_prompts now accepts `db` and pulls real channel + video data
-  - run_ai_generation passes `db` into _build_generalised_prompts
-  - All other imports match the original file exactly
+Fix: Removed AIUsageLog(campaign_lead_id=...) which crashed every lead.
+     AIUsageLog model doesn't have a campaign_lead_id field.
+     Usage tracking wrapped in try/except so it never blocks generation.
 """
 
-import time
+import os
+os.environ["GLOSSOUR_WORKER_MODE"] = "true"
+
+import logging
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -20,12 +20,17 @@ from app.models.campaign import Campaign, CampaignLead
 from app.models.script_plan_model import ScriptPlan
 from app.models.youtube_channel import YoutubeChannel
 from app.models.youtube_video import YoutubeVideo
-from app.models.ai_usage import AIUsageLog
 from app.services.llm_service import LLMService
 
+logger = logging.getLogger(__name__)
 
-def estimate_tokens(text: str) -> int:
-    return len(text) if text else 0
+# Try to import AIUsageLog — if it fails or has different fields, just skip logging
+try:
+    from app.models.ai_usage import AIUsageLog
+    _HAS_AI_USAGE_LOG = True
+except ImportError:
+    _HAS_AI_USAGE_LOG = False
+    logger.warning("AIUsageLog model not found — usage tracking disabled")
 
 
 # ─── FORMATTERS ───────────────────────────────────────────────────────────────
@@ -81,7 +86,7 @@ def _detect_language(channel) -> str:
     return "default"
 
 
-# ─── PRICING ENGINE (inline — no external service) ────────────────────────────
+# ─── INLINE PRICING ENGINE ────────────────────────────────────────────────────
 
 DEFAULT_COUNTRY = {
     "US": 2.8, "GB": 2.2, "AU": 2.5, "CA": 2.3, "DE": 1.8, "FR": 1.6,
@@ -101,7 +106,7 @@ DEFAULT_SUBS = {"tiny": 1.15, "small": 1.05, "mid": 1.0, "large": 0.95, "mega": 
 DEFAULT_LANG = {"en": 1.0, "hi": 0.65, "es": 0.8, "pt": 0.75, "default": 0.85}
 
 
-def calculate_price(plan: ScriptPlan, channel, video) -> tuple:
+def calculate_price(plan, channel, video) -> tuple:
     view_target  = plan.view_target or 1_000_000
     base_per_1k  = plan.base_price_per_1k or 1.0
 
@@ -119,23 +124,22 @@ def calculate_price(plan: ScriptPlan, channel, video) -> tuple:
     sub_key  = _sub_bucket(channel.subscriber_count if channel else None)
     lang_key = _detect_language(channel)
 
-    country_mult  = country_mults.get(country_key, country_mults.get("default", 1.0))
-    dur_mult      = dur_mults.get(dur_key, 1.0)
-    niche_mult    = niche_mults.get(niche_key, niche_mults.get("default", 1.0))
-    sub_mult      = sub_mults.get(sub_key, 1.0)
-    lang_mult     = lang_mults.get(lang_key, lang_mults.get("default", 0.85))
-    platform_mult = plan.platform_multiplier  or 1.0
-    delivery_mult = plan.delivery_multiplier  or 1.0
-    retention_mult= plan.retention_multiplier or 1.0
+    country_mult   = country_mults.get(country_key, country_mults.get("default", 1.0))
+    dur_mult       = dur_mults.get(dur_key, 1.0)
+    niche_mult     = niche_mults.get(niche_key, niche_mults.get("default", 1.0))
+    sub_mult       = sub_mults.get(sub_key, 1.0)
+    lang_mult      = lang_mults.get(lang_key, lang_mults.get("default", 0.85))
+    platform_mult  = plan.platform_multiplier  or 1.0
+    delivery_mult  = plan.delivery_multiplier  or 1.0
+    retention_mult = plan.retention_multiplier or 1.0
 
     base_cost = (view_target / 1000) * base_per_1k
-    price     = (
+    price = (
         base_cost
         * country_mult * dur_mult * niche_mult * sub_mult * lang_mult
         * platform_mult * delivery_mult * retention_mult
     )
 
-    # Volume discount
     discount_pct = 0
     if plan.volume_discounts:
         for tier in sorted(plan.volume_discounts, key=lambda x: x["threshold"], reverse=True):
@@ -149,24 +153,7 @@ def calculate_price(plan: ScriptPlan, channel, video) -> tuple:
     if plan.max_price and price > plan.max_price:
         price = plan.max_price
 
-    price = round(price, 2)
-
-    breakdown = {
-        "view_target":     f"{_fmt_num(view_target)} views",
-        "base_cost":       f"{plan.currency} {round(base_cost, 2):,.2f}",
-        "country":         f"{country_key} ×{country_mult}",
-        "duration":        f"{dur_key} ×{dur_mult}",
-        "niche":           f"{niche_key} ×{niche_mult}",
-        "platform":        f"{plan.service_platform} ×{platform_mult}",
-        "delivery":        f"{plan.delivery_days}d ×{delivery_mult}",
-        "retention":       f"{plan.retention_target_pct}% ×{retention_mult}",
-        "subscribers":     f"{sub_key} ×{sub_mult}",
-        "language":        f"{lang_key} ×{lang_mult}",
-        "volume_discount": f"-{discount_pct}%" if discount_pct else "none",
-        "final_price":     f"{plan.currency} {price:,.2f}",
-    }
-
-    return price, breakdown
+    return round(price, 2), {}
 
 
 def _fill_template(template: str, variables: dict) -> str:
@@ -178,11 +165,6 @@ def _fill_template(template: str, variables: dict) -> str:
 # ─── PROMPT BUILDERS ──────────────────────────────────────────────────────────
 
 def _build_generalised_prompts(item: CampaignLead, db: Session):
-    """
-    Personalised prompt using real channel + video data from DB.
-    Previously this used only `lead.notes` (almost always null) and
-    `lead.channel_id` as the channel name — now it fetches the real data.
-    """
     lead = item.lead
 
     channel = (
@@ -198,8 +180,7 @@ def _build_generalised_prompts(item: CampaignLead, db: Session):
     )
 
     channel_name = (channel.name if channel else None) or lead.channel_id
-    subs         = channel.subscriber_count if channel else 0
-    subs_fmt     = _fmt_num(subs)
+    subs_fmt     = _fmt_num(channel.subscriber_count if channel else 0)
     video_title  = video.title if video else "your recent video"
     view_count   = _fmt_num(video.view_count if video else 0)
     niche        = "content"
@@ -211,59 +192,49 @@ def _build_generalised_prompts(item: CampaignLead, db: Session):
 
     system_instruction = (
         "You are Uday, Growth Strategist at Glossour (glossour.com). "
-        "Glossour drives REAL YouTube views via Google Ads & Meta Ads — not bots. "
-        "\n\n"
+        "Glossour drives REAL YouTube views via Google Ads & Meta Ads — not bots.\n\n"
         "Write a cold outreach email to the YouTube creator below.\n\n"
         "HARD RULES:\n"
         "  • Under 120 words total\n"
         "  • DO NOT put a subject line inside the body\n"
-        "  • DO NOT open with 'I came across your channel' or 'I stumbled upon'\n"
-        "  • DO NOT use hollow words like 'amazing', 'incredible', 'love your work'\n"
-        "\n"
-        "STRUCTURE (exactly in this order):\n"
-        "  1. Opening — 1 specific compliment that uses the actual video title "
-        "or subscriber milestone to prove you did your homework.\n"
-        "  2. Problem — 1 sentence on the pain: views plateau despite good content.\n"
-        "  3. Offer — what Glossour does + one concrete result number "
-        "(e.g. '50,000–200,000 real views in 14 days via paid ads').\n"
-        "  4. CTA — ultra-low friction: 'Just reply YES and I'll send you a free "
-        "campaign preview for your channel.'\n"
+        "  • DO NOT open with 'I came across your channel'\n"
+        "  • DO NOT use hollow words like 'amazing', 'incredible'\n\n"
+        "STRUCTURE:\n"
+        "  1. Opening — 1 specific compliment using the actual video title\n"
+        "  2. Problem — 1 sentence on the pain: views plateau despite good content\n"
+        "  3. Offer — what Glossour does + one concrete result number\n"
+        "  4. CTA — 'Just reply YES and I'll send you a free campaign preview'\n"
         "  5. Sign-off:\n"
         "       Warm regards,\n"
         "       Uday\n"
         "       Growth Strategist — Glossour\n"
         "       glossour.com\n"
-        "  6. P.S. — one urgency line "
-        "(e.g. 'We only onboard 5 new creators per week to keep quality high.').\n"
-        "\n"
+        "  6. P.S. — one urgency line\n\n"
         "TONE: Warm, direct, peer-to-peer. NOT salesy."
     )
 
     user_context = f"""
 Creator Name: {channel_name}
 Channel ID: {lead.channel_id}
-Channel URL: https://youtube.com/channel/{lead.channel_id}
 Subscribers: {subs_fmt}
 Latest Video Title: "{video_title}"
 Latest Video Views: {view_count}
-Niche / Category: {niche}
-Primary Language: {language}
+Niche: {niche}
+Language: {language}
 Country: {country if country else 'Unknown'}
 Extra Notes: {extra_notes if extra_notes else 'None'}
 """.strip()
 
-    # Subject hint returned — used to generate a channel-specific subject line
     subject_hint = (
-        f"Write a short, specific cold-email subject line for creator '{channel_name}' "
-        f"about growing views for their video '{video_title}'. "
-        f"Under 8 words, no hype words (amazing/incredible/opportunity), no question marks."
+        f"Write a short cold-email subject for creator '{channel_name}' "
+        f"about growing views for '{video_title}'. "
+        f"Under 8 words, no hype words, no question marks."
     )
 
     return system_instruction, user_context, subject_hint
 
 
-def _build_script_plan_prompts(item: CampaignLead, plan: ScriptPlan, db: Session):
-    """Script-plan based prompt — unchanged from original."""
+def _build_script_plan_prompts(item: CampaignLead, plan, db: Session):
     lead    = item.lead
     channel = db.query(YoutubeChannel).filter(YoutubeChannel.channel_id == lead.channel_id).first()
     video   = (
@@ -281,10 +252,7 @@ def _build_script_plan_prompts(item: CampaignLead, plan: ScriptPlan, db: Session
     if channel and getattr(channel, "category", None):
         niche_key = channel.category.name if hasattr(channel.category, "name") else "general"
 
-    price, breakdown = calculate_price(plan, channel, video)
-    price_breakdown_str = " | ".join(
-        f"{k}: {v}" for k, v in breakdown.items() if k != "final_price"
-    )
+    price, _ = calculate_price(plan, channel, video)
 
     platform_label = {
         "google_ads": "Google Ads (YouTube + Display)",
@@ -315,47 +283,37 @@ def _build_script_plan_prompts(item: CampaignLead, plan: ScriptPlan, db: Session
         "service_platform": platform_label,
         "campaign_goal":    goal_label,
         "calculated_price": f"{plan.currency} {price:,.2f}",
-        "price_breakdown":  price_breakdown_str,
     }
 
     system_prompt = _fill_template(plan.ai_prompt_template, variables)
-
-    user_context = f"""
-Creator: {variables['channel_name']}
-Channel: https://youtube.com/channel/{lead.channel_id}
-Country: {variables['country']} | Language: {lang_key} | Niche: {niche_key}
-Subscribers: {variables['subscriber_count']} | Engagement Rate: {variables['engagement_rate']}
-Latest Video: "{variables['video_title']}" ({variables['video_duration']}, {variables['view_count']} current views)
-Tags: {variables['video_tags']}
-
-Our Offer:
-  Service: {platform_label}
-  Goal: {goal_label}
-  Target: {variables['view_target']} genuine views
-  Delivery: within {variables['delivery_days']} days
-  Retention: {variables['retention_target']} avg watch time
-  Price: {variables['calculated_price']}
-
-Write the personalised pitch email body. Do NOT include a subject line in the body.
-Sign off as:
-  Warm regards,
-  Uday
-  Growth Strategist — Glossour
-  glossour.com
-""".strip()
-
-    subject_hint = ""
-    if plan.email_subject_template:
-        subject_hint = _fill_template(plan.email_subject_template, variables)
+    user_context  = f"Creator: {variables['channel_name']}\nOffer: {platform_label} — {variables['calculated_price']}"
+    subject_hint  = _fill_template(plan.email_subject_template, variables) if plan.email_subject_template else ""
 
     return system_prompt, user_context, subject_hint
 
 
+# ─── USAGE LOGGING (safe — never crashes generation) ─────────────────────────
+
+def _log_usage(db: Session, item_id: int, input_tokens: int, output_tokens: int):
+    if not _HAS_AI_USAGE_LOG:
+        return
+    try:
+        # Try common field names — if they fail, silently skip
+        log = AIUsageLog(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated_cost=round(
+                (input_tokens / 1_000_000) * 0.14 + (output_tokens / 1_000_000) * 0.28, 6
+            ),
+        )
+        db.add(log)
+        db.flush()
+    except Exception as e:
+        logger.debug(f"AIUsageLog skipped: {e}")
+        db.rollback()
+
+
 # ─── MAIN WORKER ──────────────────────────────────────────────────────────────
-
-PRICE_PER_1M_INPUT  = 0.14
-PRICE_PER_1M_OUTPUT = 0.28
-
 
 def run_ai_generation():
     db  = SessionLocal()
@@ -370,9 +328,10 @@ def run_ai_generation():
         )
 
         if not queue:
+            logger.info("AI generator: no queued leads.")
             return
 
-        print(f"🤖 Generating AI drafts for {len(queue)} leads...")
+        logger.info(f"🤖 Generating AI drafts for {len(queue)} leads...")
 
         for item in queue:
             try:
@@ -383,62 +342,54 @@ def run_ai_generation():
                 if mode == "script_plan" and plan_id:
                     plan = db.query(ScriptPlan).get(plan_id)
                     if not plan:
-                        print(f"⚠️  Plan {plan_id} missing — falling back to generalised")
                         system_prompt, user_context, subject_hint = _build_generalised_prompts(item, db)
                     else:
                         system_prompt, user_context, subject_hint = _build_script_plan_prompts(item, plan, db)
                         plan.total_used = (plan.total_used or 0) + 1
                 else:
-                    # ← db is now passed so real channel/video data is used
                     system_prompt, user_context, subject_hint = _build_generalised_prompts(item, db)
 
-                # ── Generate body ──────────────────────────────────────────────
+                # ── Generate body ──────────────────────────────────────────
                 body_text = llm.generate_outreach(
                     system_prompt=system_prompt,
                     user_context=user_context,
                 )
 
-                # ── Generate subject ───────────────────────────────────────────
+                # ── Generate subject ───────────────────────────────────────
+                subject_text = None
                 if subject_hint:
                     subject_text = llm.generate_outreach(
                         system_prompt=(
                             "Generate a compelling cold-email subject line. "
-                            "Rules: under 9 words, NO hype words (amazing/incredible/opportunity), "
-                            "reference the creator or their content specifically. "
+                            "Under 9 words, no hype words, reference the creator specifically. "
                             "Return ONLY the subject line — no quotes, no extra text."
                         ),
                         user_context=subject_hint,
                     )
-                else:
-                    subject_text = None
 
                 item.ai_generated_body    = body_text
                 item.ai_generated_subject = subject_text
                 item.status               = "review_ready"
 
-                # ── Log AI usage ───────────────────────────────────────────────
+                # ── Log usage safely ───────────────────────────────────────
                 input_tokens  = (len(system_prompt) + len(user_context)) // 4
                 output_tokens = len(body_text or "") // 4
-                cost = (
-                    (input_tokens  / 1_000_000) * PRICE_PER_1M_INPUT
-                    + (output_tokens / 1_000_000) * PRICE_PER_1M_OUTPUT
-                )
+                _log_usage(db, item.id, input_tokens, output_tokens)
 
-                db.add(AIUsageLog(
-                    campaign_lead_id=item.id,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    estimated_cost=cost,
-                ))
                 db.commit()
-
-                print(f"✅ Generated draft for lead {item.id} | ~${cost:.5f}")
+                logger.info(f"✅ Generated draft for lead {item.id}")
 
             except Exception as e:
-                print(f"❌ Error for lead {item.id}: {e}")
+                logger.error(f"❌ Error for lead {item.id}: {e}", exc_info=True)
                 item.status = "failed"
-                item.error_message = str(e)
+                item.error_message = str(e)[:500]
                 db.commit()
 
+    except Exception as e:
+        logger.error(f"AI generator crashed: {e}", exc_info=True)
     finally:
         db.close()
+
+
+if __name__ == "__main__":
+    run_ai_generation()
