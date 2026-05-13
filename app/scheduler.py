@@ -16,11 +16,11 @@ def start_scheduler():
 
     scheduler.add_job(run_youtube,        "interval", hours=2,   id="youtube",  max_instances=1)
     scheduler.add_job(run_ai_generation,  "interval", minutes=15, id="ai_gen",  max_instances=1)
-    scheduler.add_job(run_email_campaigns,"interval", minutes=30, id="email",   max_instances=1)
+    scheduler.add_job(run_email_campaigns,"interval", minutes=20, id="email",   max_instances=1)
     scheduler.add_job(run_pruner,         "cron",     hour=3,     id="pruner",  max_instances=1)
 
     scheduler.start()
-    logger.info("Scheduler started — youtube=2h, ai=15m, email=30m, pruner=3am")
+    logger.info("Scheduler started — youtube=2h, ai=15m, email=20m, pruner=3am")
 
 def shutdown_scheduler():
     if scheduler.running:

@@ -86,14 +86,14 @@ def run_email_campaigns():
 
             # ── Get batch of ready leads ───────────────────────────────────
             pending = (
-                db.query(CampaignLead)
-                .filter(
-                    CampaignLead.campaign_id == campaign.id,
-                    CampaignLead.status.in_(["review_ready", "ready_to_send"]),
-                )
-                .limit(20)
-                .all()
-            )
+        db.query(CampaignLead)
+        .filter(
+        CampaignLead.campaign_id == campaign.id,
+        CampaignLead.status.in_(["review_ready", "ready_to_send"]),
+    )
+        .limit(100)   # ← was 20, now 100
+    .all()
+    )
 
             for pl in pending:
                 lead = pl.lead
